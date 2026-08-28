@@ -130,6 +130,18 @@ import {
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+import {
+  execute as agyExecute,
+  listSkills as listAgySkills,
+  syncSkills as syncAgySkills,
+  testEnvironment as agyTestEnvironment,
+  sessionCodec as agySessionCodec,
+  listAgyModels,
+} from "@paperclipai/adapter-agy-local/server";
+import {
+  agentConfigurationDoc as agyAgentConfigurationDoc,
+  models as agyModels,
+} from "@paperclipai/adapter-agy-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -853,6 +865,28 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const agyLocalAdapter: ServerAdapterModule = {
+  type: "agy_local",
+  execute: agyExecute,
+  testEnvironment: agyTestEnvironment,
+  listSkills: listAgySkills,
+  syncSkills: syncAgySkills,
+  sessionCodec: agySessionCodec,
+  sessionManagement: getAdapterSessionManagement("agy_local") ?? undefined,
+  models: agyModels,
+  listModels: listAgyModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "agy"),
+    detectCommand: readConfiguredCommand(config, "agy"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: agyAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -872,6 +906,7 @@ function registerBuiltInAdapters() {
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    agyLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
