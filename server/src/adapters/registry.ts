@@ -867,6 +867,7 @@ const piLocalAdapter: ServerAdapterModule = {
 
 const agyLocalAdapter: ServerAdapterModule = {
   type: "agy_local",
+  runtimeToolDelivery: "environment",
   execute: agyExecute,
   testEnvironment: agyTestEnvironment,
   listSkills: listAgySkills,
