@@ -1273,26 +1273,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? "variant"
           : adapterType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
-  const thinkingEffortOptions =
-    adapterType === "codex_local"
-      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
-          id: option.value,
-          label: option.label,
-        }))
-      : adapterType === "cursor"
-        ? cursorModeOptions
-        : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
-          : adapterType === "kimi_local"
-            ? kimiThinkingEffortOptions
-            : adapterType === "pi_local"
-              ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : adapterType === "claude_local" || adapterType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
-                    id,
-                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
-                  }))]
-                : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1306,6 +1286,59 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+  const thinkingEffortOptions = useMemo(() => {
+    let opts: { id: string; label: string }[];
+    if (adapterType === "codex_local") {
+      opts = codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+        id: option.value,
+        label: option.label,
+      }));
+    } else if (adapterType === "cursor") {
+      opts = [...cursorModeOptions];
+    } else if (adapterType === "opencode_local") {
+      opts = [...openCodeThinkingEffortOptions];
+    } else if (adapterType === "kimi_local") {
+      opts = [...kimiThinkingEffortOptions];
+    } else if (adapterType === "pi_local") {
+      opts = [
+        { id: "", label: "Auto" },
+        ...["off", "minimal", "low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+      ];
+    } else if (
+      adapterType === "claude_local" ||
+      adapterType === "grok_local" ||
+      adapterType === "agy_local"
+    ) {
+      opts = [
+        { id: "", label: "Auto" },
+        ...setupEfforts(adapterType, currentModelId).map((id) => ({
+          id,
+          label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+        })),
+      ];
+    } else {
+      opts = [...claudeThinkingEffortOptions];
+    }
+
+    if (
+      currentThinkingEffort &&
+      !opts.some((option) => option.id === currentThinkingEffort)
+    ) {
+      const formatted =
+        currentThinkingEffort === "xhigh"
+          ? "X-High"
+          : currentThinkingEffort[0].toUpperCase() + currentThinkingEffort.slice(1);
+      opts = [
+        ...opts,
+        {
+          id: currentThinkingEffort,
+          label: `${formatted} (unsupported)`,
+        },
+      ];
+    }
+
+    return opts;
+  }, [adapterType, currentModelId, currentThinkingEffort]);
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1727,7 +1760,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local", "agy_local"].includes(adapterType)
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
@@ -4054,14 +4087,21 @@ function ThinkingEffortDropdown({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const selected = options.find((option) => option.id === value) ?? options[0];
+  const selected = options.find((option) => option.id === value);
+  const displayLabel = selected
+    ? selected.label
+    : value
+      ? `${value === "xhigh" ? "X-High" : value[0]?.toUpperCase() + value.slice(1)} (unsupported)`
+      : options[0]?.label ?? "Auto";
 
   return (
     <Field label="Thinking effort" hint={help.thinkingEffort}>
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
+            <span className={cn(!value && "text-muted-foreground", !selected && value && "text-amber-500")}>
+              {displayLabel}
+            </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>

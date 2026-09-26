@@ -3,6 +3,10 @@ export const label = "Antigravity (agy)";
 
 export const DEFAULT_AGY_LOCAL_MODEL = "gemini-3.8-flash-high";
 
+export function modelHasEffortSuffix(model: string): boolean {
+  return /-(?:low|medium|high)$/i.test(model.trim());
+}
+
 export const models = [
   { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
   { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
