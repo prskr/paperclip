@@ -1,5 +1,6 @@
 import {
   KubeConfig,
+  ApisApi,
   CoreV1Api,
   BatchV1Api,
   CustomObjectsApi,
@@ -31,6 +32,10 @@ export interface KubeClients {
   custom: CustomObjectsApi;
   networking: NetworkingV1Api;
   rbac: RbacAuthorizationV1Api;
+  /** API discovery (/apis); used to pick the served Sandbox CRD version. */
+  apis?: ApisApi;
+  /** API server URL of the current cluster; keys per-cluster discovery caches. */
+  server?: string;
 }
 
 export function makeKubeClients(kc: KubeConfig): KubeClients {
@@ -40,5 +45,7 @@ export function makeKubeClients(kc: KubeConfig): KubeClients {
     custom: kc.makeApiClient(CustomObjectsApi),
     networking: kc.makeApiClient(NetworkingV1Api),
     rbac: kc.makeApiClient(RbacAuthorizationV1Api),
+    apis: kc.makeApiClient(ApisApi),
+    server: kc.getCurrentCluster()?.server,
   };
 }

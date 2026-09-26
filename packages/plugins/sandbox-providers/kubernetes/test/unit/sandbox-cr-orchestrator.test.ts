@@ -9,7 +9,7 @@ import {
 } from "../../src/sandbox-cr-orchestrator.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
+const SANDBOX_VERSION = "v1beta1";
 const SANDBOX_PLURAL = "sandboxes";
 
 // Helpers to build mock CR objects with given phase
@@ -28,7 +28,7 @@ describe("createSandboxCr", () => {
     const create = vi.fn().mockResolvedValue({ metadata: { uid: "test-uid" } });
     const clients = { custom: { createNamespacedCustomObject: create } };
     const manifest = {
-      apiVersion: "agents.x-k8s.io/v1alpha1",
+      apiVersion: "agents.x-k8s.io/v1beta1",
       kind: "Sandbox",
       metadata: { name: "pc-abc", namespace: "paperclip-acme" },
     };
@@ -41,6 +41,32 @@ describe("createSandboxCr", () => {
       body: manifest,
     });
     expect(result.uid).toBe("test-uid");
+  });
+
+  it("creates at the version carried by the manifest (v1alpha1 fallback)", async () => {
+    const create = vi.fn().mockResolvedValue({ metadata: { uid: "test-uid" } });
+    const getAPIVersions = vi.fn();
+    const clients = { custom: { createNamespacedCustomObject: create }, apis: { getAPIVersions } };
+    await createSandboxCr(clients as never, "ns", {
+      apiVersion: "agents.x-k8s.io/v1alpha1",
+      kind: "Sandbox",
+    });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ version: "v1alpha1" }));
+    expect(getAPIVersions).not.toHaveBeenCalled();
+  });
+
+  it("discovers the version when the manifest carries none", async () => {
+    const create = vi.fn().mockResolvedValue({ metadata: { uid: "test-uid" } });
+    const clients = {
+      custom: { createNamespacedCustomObject: create },
+      apis: {
+        getAPIVersions: vi.fn().mockResolvedValue({
+          groups: [{ name: SANDBOX_GROUP, versions: [{ version: "v1alpha1" }] }],
+        }),
+      },
+    };
+    await createSandboxCr(clients as never, "ns", { kind: "Sandbox" });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ version: "v1alpha1" }));
   });
 
   it("throws if the API response has no UID", async () => {
@@ -97,6 +123,21 @@ describe("getSandboxCrStatus", () => {
 });
 
 describe("findPodForSandbox", () => {
+  it("returns the agents.x-k8s.io/pod-name annotation (v1beta1 warm-pool adoption)", async () => {
+    const get = vi.fn().mockResolvedValue({
+      metadata: { uid: "u", annotations: { "agents.x-k8s.io/pod-name": "warmpool-abc-xyz" } },
+      status: { conditions: [{ type: "Ready", status: "True" }] },
+    });
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: vi.fn(), listNamespacedPod: vi.fn() },
+    };
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    expect(podName).toBe("warmpool-abc-xyz");
+    expect(clients.core.readNamespacedPod).not.toHaveBeenCalled();
+    expect(clients.core.listNamespacedPod).not.toHaveBeenCalled();
+  });
+
   it("returns status.podName from the Sandbox CR when set", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready", "pc-abc-pod-xyz"));
     const clients = {

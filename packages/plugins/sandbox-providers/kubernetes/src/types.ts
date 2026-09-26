@@ -57,8 +57,9 @@ export const kubernetesProviderConfigSchema = z
      * The sandbox backend to use.
      *
      * - `"sandbox-cr"` (default, alpha) — uses the kubernetes-sigs/agent-sandbox
-     *   Sandbox CRD (agents.x-k8s.io/v1alpha1). Creates a long-lived pod that
-     *   paperclip-server can exec into for multi-command adapter-install workflows.
+     *   Sandbox CRD (agents.x-k8s.io/v1beta1, or v1alpha1 on older installs).
+     *   Creates a long-lived pod that paperclip-server can exec into for
+     *   multi-command adapter-install workflows.
      *   Requires the agent-sandbox controller to be installed in the cluster.
      *
      * - `"job"` — uses batch/v1 Job (stable fallback). One-shot entrypoint; does

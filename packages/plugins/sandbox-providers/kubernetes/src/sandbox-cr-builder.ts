@@ -16,7 +16,18 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+import {
+  DEFAULT_SANDBOX_VERSION,
+  sandboxApiVersionString,
+  type SandboxApiVersion,
+} from "./sandbox-api-version.js";
+
 export interface BuildSandboxCrManifestInput {
+  /**
+   * Sandbox CRD version the cluster serves (see resolveSandboxApiVersion).
+   * Defaults to v1beta1. The spec shape is identical for v1alpha1.
+   */
+  apiVersion?: SandboxApiVersion;
   namespace: string;
   sandboxName: string;
   adapterType: string;
@@ -40,7 +51,7 @@ export function buildSandboxCrManifest(
     "paperclip.io/role": "agent",
   };
   return {
-    apiVersion: "agents.x-k8s.io/v1alpha1",
+    apiVersion: sandboxApiVersionString(input.apiVersion ?? DEFAULT_SANDBOX_VERSION),
     kind: "Sandbox",
     metadata: {
       name: input.sandboxName,

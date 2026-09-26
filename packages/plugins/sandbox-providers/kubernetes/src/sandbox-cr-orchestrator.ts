@@ -1,6 +1,7 @@
 /**
  * SandboxOrchestrator implementation backed by the kubernetes-sigs/agent-sandbox
- * Sandbox CRD (agents.x-k8s.io/v1alpha1).
+ * Sandbox CRD (agents.x-k8s.io/v1beta1, falling back to v1alpha1 on clusters
+ * that only serve the older version — see sandbox-api-version.ts).
  *
  * The Sandbox CR creates a long-lived pod that paperclip-server can exec into
  * for multi-command adapter-install workflows — the key architectural win over
@@ -23,10 +24,26 @@
 
 import type { KubeClients } from "./kube-client.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
+import {
+  SANDBOX_GROUP,
+  SANDBOX_PLURAL,
+  isSupportedSandboxVersion,
+  resolveSandboxApiVersion,
+  type SandboxApiVersion,
+} from "./sandbox-api-version.js";
 
-const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
-const SANDBOX_PLURAL = "sandboxes";
+/**
+ * The manifest built by buildSandboxCrManifest already carries the resolved
+ * apiVersion; honour it so the create call and the body always agree.
+ */
+const SANDBOX_POD_NAME_ANNOTATION = "agents.x-k8s.io/pod-name";
+
+function versionFromManifest(manifest: Record<string, unknown>): SandboxApiVersion | null {
+  const apiVersion = manifest.apiVersion;
+  if (typeof apiVersion !== "string") return null;
+  const [group, version] = apiVersion.split("/");
+  return group === SANDBOX_GROUP && isSupportedSandboxVersion(version) ? version : null;
+}
 
 export class SandboxCrTimeoutError extends Error {
   constructor(namespace: string, name: string, timeoutMs: number) {
@@ -99,9 +116,10 @@ export async function createSandboxCr(
   namespace: string,
   manifest: Record<string, unknown>,
 ): Promise<{ uid: string }> {
+  const version = versionFromManifest(manifest) ?? (await resolveSandboxApiVersion(clients));
   const result = await clients.custom.createNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version,
     namespace,
     plural: SANDBOX_PLURAL,
     body: manifest,
@@ -118,7 +136,7 @@ export async function getSandboxCrStatus(
 ): Promise<SandboxStatus> {
   const result = await clients.custom.getNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -128,7 +146,8 @@ export async function getSandboxCrStatus(
 
 /**
  * Returns the pod name backing a Sandbox CR.
- * Primary: read status.podName from the CR (set by the controller once ready).
+ * Primary: read status.podName (older controllers) or the
+ * agents.x-k8s.io/pod-name annotation (v1beta1 controllers) from the CR.
  * Fallback: list pods in the namespace filtered by the paperclip.io/managed-by
  * label and the sandbox name label set on the pod template.
  */
@@ -140,7 +159,7 @@ export async function findPodForSandbox(
   // Primary: read status.podName from the Sandbox CR
   const cr = await clients.custom.getNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -150,6 +169,15 @@ export async function findPodForSandbox(
   const podName = status.podName as string | undefined;
   if (podName && podName.trim().length > 0) {
     return podName;
+  }
+
+  // v1beta1 controllers record the backing pod in an annotation, which is the
+  // only source of truth when the pod was adopted from a warm pool (its name
+  // then differs from the Sandbox name).
+  const metadata = (cr.metadata as { annotations?: Record<string, string> }) ?? {};
+  const annotatedPodName = metadata.annotations?.[SANDBOX_POD_NAME_ANNOTATION];
+  if (annotatedPodName && annotatedPodName.trim().length > 0) {
+    return annotatedPodName;
   }
 
   // Secondary: the agent-sandbox controller (v0.4.x) names the backing pod
@@ -227,7 +255,7 @@ export async function deleteSandboxCr(
 ): Promise<void> {
   await clients.custom.deleteNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: await resolveSandboxApiVersion(clients),
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -255,18 +283,19 @@ export async function waitForSandboxReady(
 ): Promise<SandboxStatus> {
   const deadline = Date.now() + opts.timeoutMs;
   const pollMs = opts.pollMs ?? 2000;
+  const version = await resolveSandboxApiVersion(clients);
 
   while (Date.now() < deadline) {
     const cr = await clients.custom.getNamespacedCustomObject({
       group: SANDBOX_GROUP,
-      version: SANDBOX_VERSION,
+      version,
       namespace,
       plural: SANDBOX_PLURAL,
       name,
     }) as Record<string, unknown>;
 
     const status = (cr.status as Record<string, unknown>) ?? {};
-    // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
+    // agent-sandbox (v1alpha1 and v1beta1) uses status.conditions[type=Ready,status=True],
     // not status.phase. Fall back to phase for forward-compat.
     const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
     const readyCondition = conditions.find((c) => c.type === "Ready");
