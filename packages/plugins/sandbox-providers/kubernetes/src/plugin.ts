@@ -362,7 +362,13 @@ const plugin = definePlugin({
     const image = resolveImage(
       { imageOverride: null },
       adapterDefaults,
-      { imageAllowList: config.imageAllowList, imageRegistry: config.imageRegistry },
+      {
+        imageAllowList: config.imageAllowList,
+        imageRegistry: config.imageRegistry,
+        runtimeImage: config.runtimeImage,
+        runtimeImages: config.runtimeImages,
+        adapterType: effectiveAdapterType,
+      },
     );
 
     // Pick the orchestrator and build the appropriate manifest based on backend.

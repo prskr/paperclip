@@ -4,6 +4,49 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+/**
+ * Container image references (`registry[:port]/path/name[:tag][@digest]`) are
+ * NOT URLs: a scheme such as `https://` makes the kubelet reject the pod with
+ * InvalidImageName. Keep this permissive (the kubelet is the final authority)
+ * but reject schemes and whitespace up front.
+ */
+const imageReferenceRegex = /^[A-Za-z0-9][A-Za-z0-9._\-/:@]*$/;
+const imageReferenceSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((v) => !v.includes("://"), {
+    message: "Image reference must not include a URL scheme (use e.g. `registry.example.com/org/image:tag`)",
+  })
+  .refine((v) => imageReferenceRegex.test(v), { message: "Invalid container image reference" });
+
+/**
+ * Registry prefix (`host[:port][/path]`) used to rewrite the default runtime
+ * images. A leading `http://` / `https://` and trailing slashes are stripped for
+ * backwards compatibility with configs saved while this field demanded a URL.
+ */
+const imageRegistrySchema = z.preprocess(
+  (v) =>
+    typeof v === "string"
+      ? v.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "")
+      : v,
+  z
+    .string()
+    .min(1)
+    .refine((v) => !v.includes("://"), { message: "Image registry must not include a URL scheme" })
+    .refine((v) => /^[A-Za-z0-9][A-Za-z0-9._\-/:]*$/.test(v), {
+      message: "Invalid image registry (expected e.g. `registry.example.com/org`)",
+    }),
+);
+
+/** Treat blank strings (e.g. a cleared UI text field) as "not set". */
+function optionalBlank<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    schema.optional(),
+  );
+}
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -12,7 +55,18 @@ export const kubernetesProviderConfigSchema = z
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
-    imageRegistry: z.string().url().optional(),
+    imageRegistry: optionalBlank(imageRegistrySchema),
+    /**
+     * Optional custom runtime image used for every run in this environment,
+     * replacing the adapter default (and the `imageRegistry` rewrite).
+     * `runtimeImages[adapterType]` takes precedence when both are set.
+     */
+    runtimeImage: optionalBlank(imageReferenceSchema),
+    /**
+     * Optional per-adapter custom runtime images, keyed by adapter type
+     * (e.g. `{ "claude_local": "registry.example.com/me/claude:1.2" }`).
+     */
+    runtimeImages: z.record(imageReferenceSchema).default({}),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 

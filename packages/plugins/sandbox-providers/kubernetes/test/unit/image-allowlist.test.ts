@@ -59,4 +59,34 @@ describe("resolveImage", () => {
       ),
     ).toThrow(/not in allowlist/);
   });
+
+  it("uses the environment-wide custom runtimeImage verbatim", () => {
+    expect(
+      resolveImage(
+        { imageOverride: null },
+        defaults,
+        { imageAllowList: [], imageRegistry: "registry.example.com/paperclip", runtimeImage: "alpine:latest" },
+      ),
+    ).toBe("alpine:latest");
+  });
+
+  it("prefers a per-adapter runtime image over runtimeImage", () => {
+    const config = {
+      imageAllowList: [],
+      runtimeImage: "alpine:latest",
+      runtimeImages: { claude_local: "registry.example.com/me/claude:2" },
+    };
+    expect(resolveImage({ imageOverride: null }, defaults, { ...config, adapterType: "claude_local" })).toBe(
+      "registry.example.com/me/claude:2",
+    );
+    expect(resolveImage({ imageOverride: null }, defaults, { ...config, adapterType: "codex_local" })).toBe(
+      "alpine:latest",
+    );
+  });
+
+  it("strips a URL scheme from imageRegistry when rewriting", () => {
+    expect(
+      resolveImage({ imageOverride: null }, defaults, { imageAllowList: [], imageRegistry: "https://registry.example.com/" }),
+    ).toBe("registry.example.com/agent-runtime-claude:v1");
+  });
 });

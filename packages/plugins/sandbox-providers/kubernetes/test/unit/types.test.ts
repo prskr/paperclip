@@ -36,4 +36,46 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+
+  it("accepts imageRegistry without a URL scheme", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      imageRegistry: "registry.example.com:5000/paperclip",
+    });
+    expect(parsed.imageRegistry).toBe("registry.example.com:5000/paperclip");
+  });
+
+  it("strips a legacy URL scheme and trailing slash from imageRegistry", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      imageRegistry: "https://registry.example.com/paperclip/",
+    });
+    expect(parsed.imageRegistry).toBe("registry.example.com/paperclip");
+  });
+
+  it("treats a blank imageRegistry / runtimeImage as unset", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true, imageRegistry: "  ", runtimeImage: "" });
+    expect(parsed.imageRegistry).toBeUndefined();
+    expect(parsed.runtimeImage).toBeUndefined();
+    expect(parsed.runtimeImages).toEqual({});
+  });
+
+  it("accepts custom runtime images", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      runtimeImage: "alpine:latest",
+      runtimeImages: { codex_local: "registry.example.com/team/codex@sha256:abc123" },
+    });
+    expect(parsed.runtimeImage).toBe("alpine:latest");
+    expect(parsed.runtimeImages).toEqual({ codex_local: "registry.example.com/team/codex@sha256:abc123" });
+  });
+
+  it("rejects runtime images with a URL scheme", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, runtimeImage: "https://alpine:latest" }),
+    ).toThrow(/URL scheme/);
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, runtimeImages: { claude_local: "https://x/y:1" } }),
+    ).toThrow(/URL scheme/);
+  });
 });
