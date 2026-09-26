@@ -38,12 +38,14 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  describeAgyDeniedActions,
   detectAgyAuthRequired,
   detectAgyQuotaExhausted,
   isAgySessionUnrecoverableError,
   isAgyTransientNetworkError,
   isAgyUnknownSessionError,
   parseAgyJsonl,
+  resolveAgyRunOutcome,
   type ParsedAgyOutput,
 } from "./parse.js";
 import {
@@ -570,15 +572,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } as Record<string, unknown>)
       : null;
 
-    const parsedError =
-      typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+    const outcome = resolveAgyRunOutcome(attempt.parsed, attempt.proc.exitCode);
+    const outcomeError = outcome.errorMessage?.trim() ?? "";
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
     const rawExitCode = attempt.proc.exitCode;
-    const synthesizedExitCode =
-      (parsedError || attempt.parsed.isError) && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+    const synthesizedExitCode = outcome.failed && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
     const fallbackErrorMessage =
-      parsedError || stderrLine || `Antigravity exited with code ${synthesizedExitCode ?? -1}`;
-    const failed = (synthesizedExitCode ?? 0) !== 0;
+      outcomeError || stderrLine || `Antigravity exited with code ${synthesizedExitCode ?? -1}`;
+    const failed = outcome.failed;
 
     const provider = inferModelProvider(model);
 
@@ -587,8 +588,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage: failed ? fallbackErrorMessage : null,
-      errorCode: failed ? classifyErrorCode() : null,
-      errorFamily: failed ? errorFamily : null,
+      errorCode: failed
+        ? outcome.permissionDenied
+          ? "agy_permission_denied"
+          : classifyErrorCode()
+        : null,
+      errorFamily: failed && !outcome.permissionDenied ? errorFamily : null,
       usage: attempt.parsed.usage
         ? {
             inputTokens: attempt.parsed.usage.inputTokens,
@@ -626,9 +631,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const initial = await runAttempt(sessionId);
   const initialFailed =
-    !initial.proc.timedOut &&
-    ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage) || initial.parsed.isError);
+    !initial.proc.timedOut && resolveAgyRunOutcome(initial.parsed, initial.proc.exitCode).failed;
 
+  let finalAttempt: Attempt = initial;
   let finalResult: AdapterExecutionResult;
   if (
     sessionId &&
@@ -645,9 +650,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Antigravity conversation "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
+    finalAttempt = retry;
     finalResult = toResult(retry, true);
   } else {
     finalResult = toResult(initial);
+  }
+
+  if (finalAttempt.parsed.deniedActions.length > 0) {
+    await onLog("stdout", `[paperclip] ${describeAgyDeniedActions(finalAttempt.parsed.deniedActions)}\n`);
   }
 
   if (finalResult.sessionId && !executionTargetIsRemote) {

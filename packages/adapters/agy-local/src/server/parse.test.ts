@@ -8,8 +8,15 @@ import {
   isAgyUnknownSessionError,
   parseAgyJsonl,
   parseAgyUsage,
+  resolveAgyRunOutcome,
 } from "./parse.js";
-import { SIMPLE_RUN, TOOL_RUN, TRUNCATED_RUN } from "./fixtures.test-util.js";
+import {
+  DENIED_ACTION_RUN,
+  SIMPLE_RUN,
+  TOOL_ERROR_RECOVERED_RUN,
+  TOOL_RUN,
+  TRUNCATED_RUN,
+} from "./fixtures.test-util.js";
 
 describe("parseAgyUsage", () => {
   it("extracts usage token counts", () => {
@@ -129,6 +136,72 @@ describe("parseAgyJsonl", () => {
     expect(parsed.sessionId).toBeNull();
     expect(parsed.isError).toBe(false);
   });
+
+  it("keeps a recoverable tool error out of the terminal error when agy reports SUCCESS", () => {
+    const parsed = parseAgyJsonl(TOOL_ERROR_RECOVERED_RUN);
+    expect(parsed.status).toBe("SUCCESS");
+    expect(parsed.isError).toBe(false);
+    expect(parsed.errorMessage).toBeNull();
+    expect(parsed.toolErrorMessage).toMatch(/no such file or directory/);
+    expect(parsed.tools[0].isError).toBe(true);
+    expect(parsed.summary).toBe("RECOVERED");
+  });
+
+  it("parses denied_actions from the result event", () => {
+    const parsed = parseAgyJsonl(DENIED_ACTION_RUN);
+    expect(parsed.status).toBe("SUCCESS");
+    expect(parsed.response).toBe("");
+    expect(parsed.deniedActions).toEqual([{ action: "write_file", displayName: "WriteToFile" }]);
+  });
+
+  it("returns no denied actions when the result has none", () => {
+    expect(parseAgyJsonl(SIMPLE_RUN).deniedActions).toEqual([]);
+  });
+});
+
+describe("resolveAgyRunOutcome", () => {
+  it("passes a SUCCESS run even when a tool step errored along the way", () => {
+    const outcome = resolveAgyRunOutcome(parseAgyJsonl(TOOL_ERROR_RECOVERED_RUN), 0);
+    expect(outcome).toEqual({ failed: false, errorMessage: null, permissionDenied: false });
+  });
+
+  it("fails a non-SUCCESS terminal status with its error", () => {
+    const outcome = resolveAgyRunOutcome(
+      parseAgyJsonl('{"event":"result","result":{"status":"ERROR","error":"model refused"}}'),
+      0,
+    );
+    expect(outcome).toEqual({ failed: true, errorMessage: "model refused", permissionDenied: false });
+  });
+
+  it("fails a SUCCESS run whose only work was auto-denied", () => {
+    const outcome = resolveAgyRunOutcome(parseAgyJsonl(DENIED_ACTION_RUN), 0);
+    expect(outcome.failed).toBe(true);
+    expect(outcome.permissionDenied).toBe(true);
+    expect(outcome.errorMessage).toMatch(/WriteToFile/);
+    expect(outcome.errorMessage).toMatch(/dangerouslySkipPermissions/);
+  });
+
+  it("passes a SUCCESS run that still answered after a denied action", () => {
+    const stdout = DENIED_ACTION_RUN.replace('"response":""', '"response":"Could not write note.txt; here is the text instead."');
+    const outcome = resolveAgyRunOutcome(parseAgyJsonl(stdout), 0);
+    expect(outcome).toEqual({ failed: false, errorMessage: null, permissionDenied: false });
+  });
+
+  it("fails a SUCCESS result when the process still exited non-zero", () => {
+    const outcome = resolveAgyRunOutcome(parseAgyJsonl(SIMPLE_RUN), 1);
+    expect(outcome.failed).toBe(true);
+  });
+
+  it("falls back to the tool error when the stream ends without a result event", () => {
+    const stdout = TOOL_ERROR_RECOVERED_RUN.split("\n").slice(0, 5).join("\n");
+    const outcome = resolveAgyRunOutcome(parseAgyJsonl(stdout), 1);
+    expect(outcome.failed).toBe(true);
+    expect(outcome.errorMessage).toMatch(/no such file or directory/);
+  });
+
+  it("passes a stream without a result event when the process exited cleanly", () => {
+    expect(resolveAgyRunOutcome(parseAgyJsonl(TRUNCATED_RUN), 0).failed).toBe(false);
+  });
 });
 
 describe("failure and session error classification", () => {
@@ -174,5 +247,32 @@ describe("failure and session error classification", () => {
         stdout: "All tasks completed successfully",
       }),
     ).toBe(false);
+  });
+
+  it("ignores error-looking words inside the agent's own transcript", () => {
+    const transcript = [
+      '{"event":"init","conversation_id":"conv-1"}',
+      '{"event":"step_update","step_update":{"conversation_id":"conv-1","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"There is no unauthenticated dashboard. No 401/403, 429 or 503 responses in the logs; session abc not found in cache."}}',
+      '{"event":"step_update","step_update":{"conversation_id":"conv-1","step_index":2,"state":"DONE","step_type":"tool","tool_name":"view_file","tool_info":{"name":"view_file","output":"HTTP 401 Unauthorized\\nrate limit exceeded\\nconnection refused"}}}',
+      '{"event":"result","result":{"conversation_id":"conv-1","status":"SUCCESS","response":"Audit done: unauthenticated access is blocked."}}',
+    ].join("\n");
+    const parsed = parseAgyJsonl(transcript);
+    expect(detectAgyAuthRequired({ stdout: transcript, parsed }).requiresAuth).toBe(false);
+    expect(detectAgyQuotaExhausted({ stdout: transcript, parsed })).toBe(false);
+    expect(isAgyTransientNetworkError(transcript, "")).toBe(false);
+    expect(isAgySessionUnrecoverableError(transcript, "")).toBe(false);
+    expect(isAgyUnknownSessionError({ stdout: transcript, errorMessage: parsed.errorMessage })).toBe(false);
+  });
+
+  it("still detects CLI errors printed as plain stdout lines around the JSON stream", () => {
+    const stdout = ["Error: not logged in. Run agy login.", SIMPLE_RUN].join("\n");
+    expect(detectAgyAuthRequired({ stdout }).requiresAuth).toBe(true);
+  });
+
+  it("still detects failures carried in the terminal result error", () => {
+    const parsed = parseAgyJsonl(
+      '{"event":"result","result":{"status":"ERROR","error":"RESOURCE_EXHAUSTED: quota exceeded"}}',
+    );
+    expect(detectAgyQuotaExhausted({ parsed })).toBe(true);
   });
 });

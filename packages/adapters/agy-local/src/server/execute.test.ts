@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { discoverAgySessionArtifacts, execute, modelHasEffortSuffix, resolveAgyPrintTimeoutSec } from "./execute.js";
+import { DENIED_ACTION_RUN, TOOL_ERROR_RECOVERED_RUN } from "./fixtures.test-util.js";
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
@@ -435,6 +437,73 @@ describe("agy-local execute", () => {
     const commandArgs = capturedMeta!.commandArgs as string[];
     expect(commandArgs).toContain("--print-timeout");
     expect(commandArgs[commandArgs.indexOf("--print-timeout") + 1]).toBe("360s");
+  });
+});
+
+describe("agy-local execute run outcome", () => {
+  const runWithOutput = async (stdout: string, stderr = "", exitCode = 0) => {
+    vi.mocked(runChildProcess).mockResolvedValueOnce({
+      exitCode,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr,
+    } as Awaited<ReturnType<typeof runChildProcess>>);
+    const logs: string[] = [];
+    const result = await execute({
+      runId: "run-outcome",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Test Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {},
+      context: { paperclipWorkspace: { cwd: "/tmp/workspace" } },
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    });
+    return { result, logs: logs.join("") };
+  };
+
+  it("reports a SUCCESS run as succeeded despite a recovered tool error and auth-like transcript text", async () => {
+    const stdout = TOOL_ERROR_RECOVERED_RUN.replace(
+      '"text_delta":"RECOVERED"',
+      '"text_delta":"No unauthenticated endpoints; no 401 or 429 responses found. RECOVERED"',
+    );
+    const { result } = await runWithOutput(stdout);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    expect(result.errorMessage).toBeNull();
+    expect(result.summary).toBe("RECOVERED");
+  });
+
+  it("fails an auto-denied run with agy_permission_denied and logs how to fix it", async () => {
+    const { result, logs } = await runWithOutput(DENIED_ACTION_RUN);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("agy_permission_denied");
+    expect(result.errorMessage).toMatch(/WriteToFile/);
+    expect(logs).toMatch(/auto-denied 1 tool action\(s\): WriteToFile/);
+  });
+
+  it("keeps a run that answered after a denied action successful but still logs the denial", async () => {
+    const stdout = DENIED_ACTION_RUN.replace('"response":""', '"response":"Wrote the text into my reply instead."');
+    const { result, logs } = await runWithOutput(stdout);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    expect(logs).toMatch(/auto-denied 1 tool action\(s\): WriteToFile/);
+  });
+
+  it("still classifies a real authentication failure from the terminal result", async () => {
+    const { result } = await runWithOutput(
+      '{"event":"result","result":{"status":"ERROR","error":"not authenticated: please sign in"}}',
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("agy_auth_required");
+    expect(result.errorMessage).toBe("not authenticated: please sign in");
   });
 });
 
