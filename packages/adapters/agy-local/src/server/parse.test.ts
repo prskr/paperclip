@@ -157,6 +157,10 @@ describe("parseAgyJsonl", () => {
   it("returns no denied actions when the result has none", () => {
     expect(parseAgyJsonl(SIMPLE_RUN).deniedActions).toEqual([]);
   });
+
+  it("does not use the raw JSON stream as the summary when agy returns an empty response", () => {
+    expect(parseAgyJsonl(DENIED_ACTION_RUN).summary).toBe("");
+  });
 });
 
 describe("resolveAgyRunOutcome", () => {

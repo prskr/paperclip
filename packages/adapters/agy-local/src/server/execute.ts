@@ -624,7 +624,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? { malformed_stream_lines: attempt.parsed.malformedLines }
           : {}),
       },
-      summary: attempt.parsed.summary,
+      summary: attempt.parsed.summary || (failed ? fallbackErrorMessage : null),
       clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
     };
   };

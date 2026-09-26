@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { discoverAgySessionArtifacts, execute, modelHasEffortSuffix, resolveAgyPrintTimeoutSec } from "./execute.js";
-import { DENIED_ACTION_RUN, TOOL_ERROR_RECOVERED_RUN } from "./fixtures.test-util.js";
+import { DENIED_ACTION_RUN, SIMPLE_RUN, TOOL_ERROR_RECOVERED_RUN } from "./fixtures.test-util.js";
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
@@ -486,7 +486,18 @@ describe("agy-local execute run outcome", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("agy_permission_denied");
     expect(result.errorMessage).toMatch(/WriteToFile/);
+    expect(result.summary).toBe(result.errorMessage);
     expect(logs).toMatch(/auto-denied 1 tool action\(s\): WriteToFile/);
+  });
+
+  it("returns no summary for a successful run with an empty response", async () => {
+    const stdout = SIMPLE_RUN.replace(/"text_delta":"[^"]*"/g, '"text_delta":""').replace(
+      '"response":"HELLO_AGY\\n"',
+      '"response":""',
+    );
+    const { result } = await runWithOutput(stdout);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBeNull();
   });
 
   it("keeps a run that answered after a denied action successful but still logs the denial", async () => {

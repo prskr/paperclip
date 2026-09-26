@@ -127,6 +127,7 @@ export function parseAgyJsonl(stdout: string): ParsedAgyOutput {
   const availableTools: string[] = [];
   let assistantText = "";
   let malformedLines = 0;
+  let sawJsonEvent = false;
 
   const toolsByStep = new Map<number, AgyToolInvocation>();
   let lastStepUsage: { usage: UsageSummary; thinkingTokens: number | null } | null = null;
@@ -147,6 +148,7 @@ export function parseAgyJsonl(stdout: string): ParsedAgyOutput {
       malformedLines += 1;
       continue;
     }
+    sawJsonEvent = true;
 
     const eventType = asString(event.event, "");
 
@@ -262,7 +264,9 @@ export function parseAgyJsonl(stdout: string): ParsedAgyOutput {
   }
 
   const responseText = response ?? assistantText;
-  const summary = firstLine(responseText) ?? (responseText.trim() || stdout.trim());
+  // Raw stdout is a useful summary only for plain-text output; once agy spoke
+  // stream-json, an empty response must not surface the JSON events instead.
+  const summary = firstLine(responseText) ?? (sawJsonEvent ? "" : stdout.trim());
 
   if (!errorMessage && status !== null && status !== AGY_SUCCESS_STATUS) {
     errorMessage = `agy finished with status ${status}`;
