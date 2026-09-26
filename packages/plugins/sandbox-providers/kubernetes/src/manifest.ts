@@ -47,7 +47,19 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           imageRegistry: {
             type: "string",
-            description: "Override the default registry for agent runtime images (default: ghcr.io/paperclipai).",
+            description:
+              "Override the default registry for agent runtime images (default: ghcr.io/paperclipai). A registry host and optional path without scheme, e.g. `registry.example.com/paperclip`.",
+          },
+          runtimeImage: {
+            type: "string",
+            description:
+              "Optional custom container image used for agent runs in this environment instead of the default runtime image, e.g. `registry.example.com/team/agent-runtime:1.2`. No URL scheme. Leave empty to use the default.",
+          },
+          runtimeImages: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description:
+              "Optional per-adapter custom images keyed by adapter type, e.g. `{\"claude_local\": \"registry.example.com/team/claude:1.2\"}`. Takes precedence over `runtimeImage`.",
           },
           imageAllowList: {
             type: "array",

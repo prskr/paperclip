@@ -64,7 +64,9 @@ Common optional fields:
 | `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor_local, opencode_local, pi_local). Determines runtime image + env keys + egress allow-list. |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
-| `imageRegistry` | (none) | Override the default registry for agent runtime images. |
+| `imageRegistry` | (none) | Override the default registry for agent runtime images. A registry host and optional path without scheme (e.g. `registry.example.com/paperclip`); a legacy `https://` prefix is stripped. |
+| `runtimeImage` | (none) | Optional custom container image for every run in this environment (e.g. `registry.example.com/team/agent-runtime:1.2`). Used verbatim, replacing the adapter default and the `imageRegistry` rewrite. Must not include a URL scheme. |
+| `runtimeImages` | `{}` | Optional per-adapter custom images keyed by adapter type (e.g. `{"claude_local": "registry.example.com/team/claude:1.2"}`). Takes precedence over `runtimeImage`. |
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |

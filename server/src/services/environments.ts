@@ -70,6 +70,10 @@ export interface KubernetesEnvironmentConfigInput {
   egressAllowCidrs?: string[];
   namespacePrefix?: string;
   imageRegistry?: string;
+  /** Optional custom runtime image for every run (replaces the adapter default). */
+  runtimeImage?: string;
+  /** Optional custom runtime images keyed by adapter type (wins over `runtimeImage`). */
+  runtimeImages?: Record<string, string>;
   adapterType?: string;
   /**
    * Sandbox lease RPC timeout in milliseconds. Read at lease time by

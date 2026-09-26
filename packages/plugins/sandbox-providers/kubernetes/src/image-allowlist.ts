@@ -26,6 +26,12 @@ export interface ResolveImageDefaults {
 export interface ResolveImageConfig {
   imageAllowList: string[];
   imageRegistry?: string;
+  /** Operator-configured image for every adapter in this environment. */
+  runtimeImage?: string;
+  /** Operator-configured images keyed by adapter type (wins over `runtimeImage`). */
+  runtimeImages?: Record<string, string>;
+  /** Adapter type of the run, used to look up `runtimeImages`. */
+  adapterType?: string;
 }
 
 export function resolveImage(
@@ -39,6 +45,12 @@ export function resolveImage(
     }
     return target.imageOverride;
   }
+  // Operator-configured custom images are used verbatim: they are set by the
+  // environment owner, so neither the allowlist (which governs per-target
+  // overrides) nor the registry rewrite applies.
+  const perAdapter = config.adapterType ? config.runtimeImages?.[config.adapterType] : undefined;
+  if (perAdapter) return perAdapter;
+  if (config.runtimeImage) return config.runtimeImage;
   if (config.imageRegistry) {
     return rewriteRegistry(defaults.runtimeImage, config.imageRegistry);
   }
@@ -48,7 +60,7 @@ export function resolveImage(
 function rewriteRegistry(image: string, registry: string): string {
   // image is like "ghcr.io/paperclipai/agent-runtime-claude:v1"
   // we want to replace the first two path segments (host + org) with `registry`
-  const cleanRegistry = registry.replace(/\/+$/, "");
+  const cleanRegistry = registry.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   const colonIdx = image.lastIndexOf(":");
   const tag = colonIdx >= 0 ? image.slice(colonIdx) : "";
   const path = colonIdx >= 0 ? image.slice(0, colonIdx) : image;
