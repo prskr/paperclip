@@ -24,5 +24,7 @@ describe("model-specific setup efforts", () => {
     expect(setupEfforts("agy_local", "gemini-3.6-flash-low")).toEqual([]);
     expect(setupEfforts("agy_local", "claude-sonnet-4-6")).toEqual(["low", "medium", "high"]);
     expect(setupEfforts("agy_local", "auto")).toEqual(["low", "medium", "high"]);
+    expect(setupEfforts("agy_local", "")).toEqual([]);
+    expect(setupEfforts("agy_local")).toEqual([]);
   });
 });
