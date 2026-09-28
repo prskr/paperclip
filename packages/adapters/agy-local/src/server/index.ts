@@ -26,6 +26,14 @@ export {
   isAgySessionUnrecoverableError,
   isAgySuccessResult,
 } from "./parse.js";
+export {
+  evaluateAgyCredentialReadiness,
+  resolveAgyOAuthTokenPath,
+  hasUsableAgyOAuthToken,
+  type AgyCredentialReadiness,
+  type AgyCredentialReadinessInput,
+} from "./credentials.js";
+
 
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {

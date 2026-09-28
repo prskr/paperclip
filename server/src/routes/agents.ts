@@ -112,6 +112,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { evaluateAgyCredentialReadiness } from "@paperclipai/adapter-agy-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
@@ -3685,9 +3686,46 @@ export function agentRoutes(
     return readiness.ready ? "present" : "absent";
   }
 
+  // The agy_local branch of the auth-signal read. Checks GEMINI_API_KEY in the
+  // environment bindings for non-local environments, or evaluateAgyCredentialReadiness
+  // against host-local OAuth tokens / env keys for local environments.
+  async function evaluateAgyAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const apiKeyBinding = environmentEnv.GEMINI_API_KEY;
+        if (apiKeyBinding !== undefined) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            { GEMINI_API_KEY: apiKeyBinding },
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (asNonEmptyString(resolution.env.GEMINI_API_KEY)) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = evaluateAgyCredentialReadiness({
+      env: process.env,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
   // The cheap host-local authentication signal for one adapter type. The route
   // reads host-local state only: a stored Claude login, a resolved environment
-  // env var, or the local Codex credential readiness check. It leases no
+  // env var, or the local Codex/Antigravity credential readiness check. It leases no
   // sandbox, starts no shell command, and starts no model request. The two
   // access gates below run before any read, so a caller who cannot create
   // agents for the company and a foreign environment both fail closed before
@@ -3710,6 +3748,8 @@ export function agentRoutes(
           status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
         } else if (type === "codex_local") {
           status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+        } else if (type === "agy_local") {
+          status = await evaluateAgyAuthSignal(req, companyId, environmentId);
         }
       } catch {
         // A failed read is never a claim that the credential is absent. Report

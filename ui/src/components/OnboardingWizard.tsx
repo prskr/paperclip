@@ -758,10 +758,6 @@ function OnboardingWizardInner({
     ? selectedSavedKey.id
     : savedKeys.options[0]?.id;
   const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
-  const credentialMode = credentialModeChoice ?? (
-    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
-  );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
@@ -948,25 +944,6 @@ function OnboardingWizardInner({
     if (company) setCompanyName(company.name);
   }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
 
-  // Persist wizard state to localStorage on every change
-  useEffect(() => {
-    if (!effectiveOnboardingOpen) return;
-    const state = {
-      step, companyName,
-      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
-      // The mode, never the key: this blob is localStorage.
-      credentialMode, credentialModeChoice,
-      createdCompanyId, createdCompanyPrefix, createdAgentId,
-      createdCompanyGoalId, createdProjectId, createdIssueRef,
-    };
-    onboardingDraftStorage.write(JSON.stringify(state));
-  }, [
-    effectiveOnboardingOpen, step, companyName,
-    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
-    credentialMode, credentialModeChoice,
-    createdCompanyId, createdCompanyPrefix, createdAgentId,
-    createdCompanyGoalId, createdProjectId, createdIssueRef,
-  ]);
 
   const {
     data: adapterModels,
@@ -1058,33 +1035,6 @@ function OnboardingWizardInner({
     loginEnvironmentProvider != null &&
     loginEnvironmentCapabilities?.sandboxProviders?.[loginEnvironmentProvider]?.supportsLoginPty ===
       true;
-  // The same capability gate the agent configuration form uses to show its
-  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
-  // full adapter test result. The cheap auth signal below stands in for that
-  // input here, so this gate alone only decides whether the login mechanism
-  // could ever apply to the current adapter and environment.
-  const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
-  const localLogin = useLocalAiLogin(createdCompanyId, {
-    provider: managedProvider ?? "anthropic", method: "subscription",
-    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
-    ownership: "personal", agentIds: [], allAgents: true,
-  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
-    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
-  { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
-  // A result from a previous selection must not hire or advance this wizard.
-  // Environment query updates are not user navigation: the test resolves its
-  // own environment, and those updates must not interrupt the pending attempt.
-  useEffect(() => {
-    autoConnectStartedRef.current = false;
-    hiringAgentRef.current = null;
-    if (step === 4) {
-      setLoading(false);
-      setAdapterEnvLoading(false);
-    }
-    return () => { connectAttemptRef.current++; };
-  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
-
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
       resolvedLoginEnvironment?.driver === "sandbox" &&
@@ -1110,11 +1060,62 @@ function OnboardingWizardInner({
         resolvedLoginEnvironmentId ?? undefined,
       ),
     enabled:
-      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && (canShowAdapterLogin || adapterType === "agy_local"),
   });
   const authSignalStatus = authSignalQuery.data?.status ?? null;
+  const credentialMode = credentialModeChoice ?? (
+    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data) || (adapterType === "agy_local" && authSignalStatus === "present"))
+      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
+  );
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+
+  // Persist wizard state to localStorage on every change
+  useEffect(() => {
+    if (!effectiveOnboardingOpen) return;
+    const state = {
+      step, companyName,
+      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+      // The mode, never the key: this blob is localStorage.
+      credentialMode, credentialModeChoice,
+      createdCompanyId, createdCompanyPrefix, createdAgentId,
+      createdCompanyGoalId, createdProjectId, createdIssueRef,
+    };
+    onboardingDraftStorage.write(JSON.stringify(state));
+  }, [
+    effectiveOnboardingOpen, step, companyName,
+    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+    credentialMode, credentialModeChoice,
+    createdCompanyId, createdCompanyPrefix, createdAgentId,
+    createdCompanyGoalId, createdProjectId, createdIssueRef,
+  ]);
+
+  // The same capability gate the agent configuration form uses to show its
+  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
+  // full adapter test result. The cheap auth signal stands in for that
+  // input here, so this gate alone only decides whether the login mechanism
+  // could ever apply to the current adapter and environment.
+  const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const localLogin = useLocalAiLogin(createdCompanyId, {
+    provider: managedProvider ?? "anthropic", method: "subscription",
+    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
+    ownership: "personal", agentIds: [], allAgents: true,
+  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
+    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
+  { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
+  // A result from a previous selection must not hire or advance this wizard.
+  // Environment query updates are not user navigation: the test resolves its
+  // own environment, and those updates must not interrupt the pending attempt.
+  useEffect(() => {
+    autoConnectStartedRef.current = false;
+    hiringAgentRef.current = null;
+    if (step === 4) {
+      setLoading(false);
+      setAdapterEnvLoading(false);
+    }
+    return () => { connectAttemptRef.current++; };
+  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
   /**
    * Restores the connect sequence after a reload.
    *
@@ -1165,7 +1166,8 @@ function OnboardingWizardInner({
    * then replace it with a sign-in prompt. A reassurance that is wrong and then
    * withdrawn is worse than saying nothing for a beat.
    */
-  const authSignalUndecided = canShowAdapterLogin && authSignalStatus === null;
+  const authSignalUndecided =
+    (canShowAdapterLogin || adapterType === "agy_local") && authSignalStatus === null;
 
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
@@ -1233,7 +1235,8 @@ function OnboardingWizardInner({
    * Anything that gates this step belongs in here, so the next one is added
    * once rather than twice.
    */
-  const connectStepReady = sourceSelected && !adapterEnvLoading && !savedKeys.loading;
+  const connectStepReady =
+    sourceSelected && !adapterEnvLoading && !savedKeys.loading && !(adapterType === "agy_local" && authSignalQuery.isLoading);
 
   /**
    * Whether this step has a sign-in to do before it can hire.
@@ -1285,6 +1288,7 @@ function OnboardingWizardInner({
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
   const connectProgress = adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
   const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
+    (adapterType === "agy_local" && authSignalStatus === "present") ||
     (credentialMode !== "api" && managedBindingForStep()));
   const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
   const connectCardLive =
@@ -1341,7 +1345,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen || step !== 4 || connectPhase !== "ready" ||
         !connectStepReady || connectStepNeedsLogin || connectCredentialStored ||
         credentialMode !== "subscription" ||
-        (adapterType !== "claude_local" && adapterType !== "codex_local") ||
+        (adapterType !== "claude_local" && adapterType !== "codex_local" && adapterType !== "agy_local") ||
         (!hasSavedSubscription && localLogin.status !== "ready") ||
         loading || autoConnectStartedRef.current) return;
     autoConnectStartedRef.current = true;
@@ -2773,7 +2777,10 @@ function OnboardingWizardInner({
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                        else if (id === "agy_local") setModel(DEFAULT_AGY_LOCAL_MODEL);
+                        else if (id === "agy_local") {
+                          setModel(DEFAULT_AGY_LOCAL_MODEL);
+                          setCredentialMode(null);
+                        }
                         else if (id === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                         else if (id === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
                         else if (id === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
@@ -2841,7 +2848,10 @@ function OnboardingWizardInner({
                                     setSourcePicked(true);
                                     setAdapterType(opt.type);
                                     if (opt.type === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                                    else if (opt.type === "agy_local") setModel(DEFAULT_AGY_LOCAL_MODEL);
+                                    else if (opt.type === "agy_local") {
+                                      setModel(DEFAULT_AGY_LOCAL_MODEL);
+                                      setCredentialMode(null);
+                                    }
                                     else if (opt.type === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                                     else if (opt.type === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
                                     else if (opt.type === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
@@ -3038,6 +3048,8 @@ function OnboardingWizardInner({
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
                         <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
+                      ) : adapterType === "agy_local" ? (
+                        <p className="text-xs text-muted-foreground">Antigravity is not signed in on this machine. Run agy in your terminal to sign in, or connect with an API key.</p>
                       ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
                     ) : null}
                   </motion.div>
