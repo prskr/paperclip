@@ -128,7 +128,7 @@ import {
   onboardingStepPositionFor,
 } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
-import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
+import { ModelSourceTiles, CredentialTag, type CredentialMode } from "./onboarding/ModelSourceTiles";
 import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
@@ -213,8 +213,33 @@ function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boole
  * adapter with no brand file here still renders — with its registry icon —
  * rather than a gap where a tile should be.
  */
-const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
-  claude_local: "/brands/claude-color.svg",
+const MODEL_SOURCE_BRAND_MARKS: Record<string, { src: string; dark?: string }> = {
+  claude_local: { src: "/brands/claude-color.svg" },
+  gemini_local: { src: "/brands/adapters/gemini-color.svg" },
+  kimi_local: {
+    src: "/brands/adapters/kimi-color-light.svg",
+    dark: "/brands/adapters/kimi-color.svg",
+  },
+  cursor: {
+    src: "/brands/adapters/cursor.svg",
+    dark: "/brands/adapters/cursor-dark.svg",
+  },
+  cursor_cloud: {
+    src: "/brands/adapters/cursor.svg",
+    dark: "/brands/adapters/cursor-dark.svg",
+  },
+  grok_local: {
+    src: "/brands/adapters/grok.svg",
+    dark: "/brands/adapters/grok-dark.svg",
+  },
+  hermes_local: {
+    src: "/brands/adapters/hermesagent.svg",
+    dark: "/brands/adapters/hermesagent-dark.svg",
+  },
+  pi_local: {
+    src: "/brands/adapters/pi.svg",
+    dark: "/brands/adapters/pi-dark.svg",
+  },
 };
 
 
@@ -252,6 +277,15 @@ const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: stri
 const API_KEY_ENV_KEYS: Record<string, string> = {
   claude_local: ANTHROPIC_API_KEY_ENV_KEY,
   codex_local: "OPENAI_API_KEY",
+  gemini_local: "GEMINI_API_KEY",
+  grok_local: "XAI_API_KEY",
+  kimi_local: "KIMI_MODEL_API_KEY",
+  cursor: "CURSOR_API_KEY",
+  cursor_cloud: "CURSOR_API_KEY",
+  opencode_local: "OPENROUTER_API_KEY",
+  pi_local: "ANTHROPIC_API_KEY",
+  agy_local: "GEMINI_API_KEY",
+  hermes_local: "OPENROUTER_API_KEY",
 };
 
 function apiKeyEnvKeyFor(adapterType: string): string {
@@ -269,7 +303,22 @@ function ModelSourceMark({
   if (Inline) return <Inline className="size-full" />;
   const brand = MODEL_SOURCE_BRAND_MARKS[type];
   if (!brand) return <Fallback className="size-full" />;
-  return <img src={brand} alt="" className="size-full" />;
+  return (
+    <>
+      <img
+        src={brand.src}
+        alt=""
+        className={cn("size-full shrink-0 object-contain", brand.dark && "dark:hidden")}
+      />
+      {brand.dark && (
+        <img
+          src={brand.dark}
+          alt=""
+          className="hidden size-full shrink-0 object-contain dark:block"
+        />
+      )}
+    </>
+  );
 }
 
 // Exported so tests write/read the exact key the component uses, instead of
@@ -1130,11 +1179,14 @@ function OnboardingWizardInner({
     adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "agy_local" ||
+    adapterType === "grok_local" ||
+    adapterType === "hermes_local";
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
-  const { recommendedAdapters, moreAdapters } = useMemo(() => {
+  const { recommendedAdapters, moreAdapters, allAdapters } = useMemo(() => {
     const all = listUIAdapters()
       .filter((a) =>
         !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
@@ -1144,10 +1196,17 @@ function OnboardingWizardInner({
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
 
     return {
+      allAdapters: all,
       recommendedAdapters: all.filter((a) => a.recommended),
       moreAdapters: all.filter((a) => !a.recommended),
     };
   }, [disabledTypes]);
+
+  useEffect(() => {
+    if (moreAdapters.some((a) => a.type === adapterType)) {
+      setShowMoreAdapters(true);
+    }
+  }, [moreAdapters, adapterType]);
 
   /**
    * A source chosen from the visible row. Read off the row rather than off
@@ -1155,7 +1214,7 @@ function OnboardingWizardInner({
    * no longer offers — a selection the customer cannot see.
    */
   const sourceSelected =
-    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+    sourcePicked && allAdapters.some((opt) => opt.type === adapterType);
 
   /**
    * Whether the connect step may advance.
@@ -1510,6 +1569,10 @@ function OnboardingWizardInner({
       setModel(DEFAULT_GEMINI_LOCAL_MODEL);
       return;
     }
+    if (next === "kimi_local") {
+      setModel(DEFAULT_KIMI_LOCAL_MODEL);
+      return;
+    }
     if (next === "cursor") {
       setModel(DEFAULT_CURSOR_LOCAL_MODEL);
       return;
@@ -1526,6 +1589,8 @@ function OnboardingWizardInner({
     cursor: "agent",
     opencode_local: "opencode",
     agy_local: "agy",
+    grok_local: "grok",
+    hermes_local: "hermes",
   };
   const effectiveAdapterCommand =
     command.trim() ||
@@ -2680,15 +2745,23 @@ function OnboardingWizardInner({
                         question, and answering it is what opens the card. */}
                     <ModelSourceTiles
                       label="Model source"
-                      sources={recommendedAdapters.map((opt) => ({
-                        id: opt.type,
-                        label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
-                        icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
-                      }))}
+                      sources={
+                        connectCollapsed
+                          ? allAdapters.map((opt) => ({
+                              id: opt.type,
+                              label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
+                              icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                            }))
+                          : (recommendedAdapters.length > 0 ? recommendedAdapters : allAdapters).map((opt) => ({
+                              id: opt.type,
+                              label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
+                              icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                            }))
+                      }
                       mode={credentialMode}
                       selectedId={
                         sourcePicked &&
-                        recommendedAdapters.some((opt) => opt.type === adapterType)
+                        allAdapters.some((opt) => opt.type === adapterType)
                           ? adapterType
                           : null
                       }
@@ -2700,6 +2773,10 @@ function OnboardingWizardInner({
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                        else if (id === "agy_local") setModel(DEFAULT_AGY_LOCAL_MODEL);
+                        else if (id === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                        else if (id === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
+                        else if (id === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
                         else if (id !== "codex_local") setModel("");
                         setConnectPhase("collapsing");
                       }}
@@ -2732,6 +2809,68 @@ function OnboardingWizardInner({
                         {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
+
+                      {moreAdapters.length > 0 && (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                            onClick={() => setShowMoreAdapters((v) => !v)}
+                          >
+                            <ChevronDown
+                              className={cn(
+                                "size-3.5 transition-transform",
+                                showMoreAdapters ? "rotate-0" : "-rotate-90",
+                              )}
+                            />
+                            More harnesses ({moreAdapters.length})
+                          </button>
+
+                          {showMoreAdapters && (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mt-2.5">
+                              {moreAdapters.map((opt) => (
+                                <button
+                                  key={opt.type}
+                                  type="button"
+                                  role="radio"
+                                  aria-checked={sourcePicked && adapterType === opt.type}
+                                  disabled={Boolean(opt.comingSoon)}
+                                  onClick={() => {
+                                    if (connectPhase !== "idle") return;
+                                    autoConnectStartedRef.current = false;
+                                    setSourcePicked(true);
+                                    setAdapterType(opt.type);
+                                    if (opt.type === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                                    else if (opt.type === "agy_local") setModel(DEFAULT_AGY_LOCAL_MODEL);
+                                    else if (opt.type === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                    else if (opt.type === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
+                                    else if (opt.type === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                                    else if (opt.type !== "codex_local") setModel("");
+                                    setConnectPhase("collapsing");
+                                  }}
+                                  className={cn(
+                                    "flex min-w-0 cursor-pointer flex-col items-center gap-1.5 rounded-md border p-3",
+                                    "transition-(--tp-border-color-background-color) ease-(--motion-ease-standard) duration-(--motion-duration-fast)",
+                                    "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)",
+                                    opt.comingSoon && "opacity-40 cursor-not-allowed",
+                                    sourcePicked && adapterType === opt.type
+                                      ? "border-foreground/40 bg-accent"
+                                      : "border-border bg-card hover:bg-accent/40",
+                                  )}
+                                >
+                                  <span className="flex size-(--sz-30px) shrink-0 items-center justify-center">
+                                    <ModelSourceMark type={opt.type} Fallback={opt.icon} />
+                                  </span>
+                                  <span className="text-(length:--text-compact) font-medium text-foreground truncate max-w-full">
+                                    {CONNECT_SOURCE_NAMES[opt.type] ?? opt.label}
+                                  </span>
+                                  <CredentialTag mode={credentialMode} />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </motion.div>
                   </div>
 
@@ -2992,49 +3131,49 @@ function OnboardingWizardInner({
                                 ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
+                              : adapterType === "agy_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
+                              : adapterType === "grok_local"
+                                ? `${effectiveAdapterCommand} prompt "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
                             Prompt:{" "}
                             <span className="font-mono">Respond with hello.</span>
                           </p>
-                          {adapterType === "cursor" ||
-                          adapterType === "codex_local" ||
-                          adapterType === "gemini_local" ||
-                          adapterType === "kimi_local" ||
-                          adapterType === "opencode_local" ? (
-                            <p className="text-muted-foreground">
-                              If auth fails, set{" "}
-                              <span className="font-mono">
-                                {adapterType === "cursor"
-                                  ? "CURSOR_API_KEY"
-                                  : adapterType === "gemini_local"
-                                    ? "GEMINI_API_KEY"
-                                    : adapterType === "kimi_local"
-                                      ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
-                                    : "OPENAI_API_KEY"}
-                              </span>{" "}
-                              in env or run{" "}
-                              <span className="font-mono">
-                                {adapterType === "cursor"
-                                  ? "agent login"
-                                  : adapterType === "codex_local"
-                                    ? "codex login"
-                                    : adapterType === "gemini_local"
-                                      ? "gemini auth"
-                                      : adapterType === "kimi_local"
-                                        ? "kimi login"
-                                      : "opencode auth login"}
-                              </span>
-                              .
-                            </p>
-                          ) : (
-                            <p className="text-muted-foreground">
-                              If login is required, run{" "}
-                              <span className="font-mono">claude login</span>{" "}
-                              and retry.
-                            </p>
-                          )}
+                          <p className="text-muted-foreground">
+                            {adapterType === "claude_local" ? (
+                              <>
+                                If login is required, run{" "}
+                                <span className="font-mono">claude login</span>{" "}
+                                and retry.
+                              </>
+                            ) : (
+                              <>
+                                If auth fails, set{" "}
+                                <span className="font-mono">
+                                  {apiKeyEnvKeyFor(adapterType)}
+                                </span>{" "}
+                                in env or run{" "}
+                                <span className="font-mono">
+                                  {adapterType === "cursor"
+                                    ? "agent login"
+                                    : adapterType === "codex_local"
+                                      ? "codex login"
+                                      : adapterType === "gemini_local"
+                                        ? "gemini auth"
+                                        : adapterType === "kimi_local"
+                                          ? "kimi login"
+                                        : adapterType === "grok_local"
+                                          ? "grok login"
+                                        : adapterType === "opencode_local"
+                                          ? "opencode auth login"
+                                        : `${effectiveAdapterCommand} login`}
+                                </span>
+                                .
+                              </>
+                            )}
+                          </p>
                         </div>
                       )}
                     </div>

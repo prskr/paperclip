@@ -58,12 +58,14 @@ vi.mock("../api/auth", async (importOriginal) => {
   return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
 });
 
+const mockCompaniesApi = vi.hoisted(() => ({
+  create: vi.fn(),
+  list: vi.fn().mockResolvedValue([]),
+  detachInflightList: vi.fn(),
+}));
+
 vi.mock("../api/companies", () => ({
-  companiesApi: {
-    create: vi.fn(),
-    list: vi.fn().mockResolvedValue([]),
-    detachInflightList: vi.fn(),
-  },
+  companiesApi: mockCompaniesApi,
 }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
@@ -73,7 +75,7 @@ vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
     type,
-    recommended: false,
+    recommended: type === "claude_local" || type === "codex_local",
     label: type,
     description: "",
     icon: () => null,
@@ -282,6 +284,61 @@ describe("OnboardingWizard adapter selection", () => {
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
     expect(saved.adapterType).toBe("acme_external");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("allows selecting a non-recommended adapter on step 4 via more harnesses", async () => {
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+      { type: "agy_local" },
+    ];
+    const company = { id: "comp-1", name: "Acme", issuePrefix: "ACM" };
+    mockCompany.companies = [company];
+    mockCompaniesApi.list.mockResolvedValue([company]);
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 4,
+        companyName: "Acme",
+        agentName: "Chief of Staff",
+        createdCompanyId: "comp-1",
+      }),
+    );
+
+    const { root } = await mount();
+
+    // The more harnesses toggle button should be present
+    const toggleButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("More harnesses"),
+    );
+    expect(toggleButton).toBeTruthy();
+
+    // Click to expand more harnesses
+    await act(async () => {
+      toggleButton?.click();
+    });
+    await flushReact();
+
+    // agy_local tile should now be visible
+    const agyButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("Antigravity") || btn.textContent?.includes("agy_local"),
+    );
+    expect(agyButton).toBeTruthy();
+
+    // Click to select agy_local
+    await act(async () => {
+      agyButton?.click();
+    });
+    await flushReact();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("agy_local");
 
     await act(async () => {
       root.unmount();
