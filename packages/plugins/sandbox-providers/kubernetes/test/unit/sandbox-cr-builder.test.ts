@@ -14,13 +14,22 @@ const baseInput = {
     limits: { cpu: "2", memory: "4Gi" },
   },
   runtimeClassName: undefined,
+  apiVersion: "agents.x-k8s.io/v1beta1",
 };
 
 describe("buildSandboxCrManifest", () => {
-  it("returns a Sandbox CR with the correct apiVersion and kind", () => {
+  it("returns a Sandbox CR with the resolved apiVersion and kind", () => {
     const cr = buildSandboxCrManifest(baseInput);
-    expect(cr.apiVersion).toBe("agents.x-k8s.io/v1alpha1");
+    expect(cr.apiVersion).toBe("agents.x-k8s.io/v1beta1");
     expect(cr.kind).toBe("Sandbox");
+  });
+
+  it("uses the apiVersion the caller resolved, so an older cluster still gets a CR it serves", () => {
+    const cr = buildSandboxCrManifest({
+      ...baseInput,
+      apiVersion: "agents.x-k8s.io/v1alpha1",
+    });
+    expect(cr.apiVersion).toBe("agents.x-k8s.io/v1alpha1");
   });
 
   it("sets metadata name and namespace correctly", () => {
@@ -42,13 +51,8 @@ describe("buildSandboxCrManifest", () => {
   it("uses sleep-infinity entrypoint via Tini for multi-command exec", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const container = cr.spec.podTemplate.spec.containers[0];
-    expect(container.command).toEqual([
-      "/usr/bin/tini",
-      "--",
-      "/bin/sh",
-      "-c",
-      "sleep infinity",
-    ]);
+    expect(container.command.slice(0, 4)).toEqual(["/usr/bin/tini", "--", "/bin/sh", "-c"]);
+    expect(container.command[4]).toMatch(/exec sleep infinity$/);
   });
 
   it("applies the same security baseline as Job backend (non-root, drop ALL, RO rootFS, seccomp)", () => {
@@ -88,6 +92,23 @@ describe("buildSandboxCrManifest", () => {
     expect(
       volumes.every((v: { emptyDir?: unknown }) => v.emptyDir !== undefined),
     ).toBe(true);
+  });
+
+  it("marks the workspace as a git safe directory in the pod's own config, before it idles", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const container = cr.spec.podTemplate.spec.containers[0];
+    const script = container.command[container.command.length - 1];
+    expect(script).toContain("git config --global --add safe.directory /workspace");
+    expect(script).toContain("|| true");
+    expect(script).toContain("exec sleep infinity");
+  });
+
+  it("leaves the git environment alone, so an adapter keeps its own GIT_CONFIG entries", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const names = (cr.spec.podTemplate.spec.containers[0].env as Array<{ name: string }>).map(
+      (entry) => entry.name,
+    );
+    expect(names).toEqual(["HOME"]);
   });
 
   it("envFrom references the per-run secret", () => {
