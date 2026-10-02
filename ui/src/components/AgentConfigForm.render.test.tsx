@@ -889,6 +889,42 @@ describe("AgentConfigForm environment selector", () => {
     });
   });
 
+  it("displays unsupported saved effort as unsupported rather than Auto for existing agents", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "claude_local",
+        adapterConfig: {
+          model: "claude-haiku-4-5",
+          effort: "high",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const buttons = Array.from(result.container.querySelectorAll("button"));
+    const effortButton = buttons.find((button) => button.textContent?.includes("High (unsupported)"));
+    expect(effortButton).not.toBeUndefined();
+  });
+
+  it("displays unsupported saved effort for Antigravity with suffixed model", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "agy_local",
+        adapterConfig: {
+          model: "gemini-3.8-flash-high",
+          effort: "low",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const buttons = Array.from(result.container.querySelectorAll("button"));
+    const effortButton = buttons.find((button) => button.textContent?.includes("Low (unsupported)"));
+    expect(effortButton).not.toBeUndefined();
+  });
+
   it("names the Claude default for new and existing agents without pinning it", async () => {
     const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
     const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
@@ -1721,6 +1757,42 @@ describe("AgentConfigForm environment selector", () => {
     });
 
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it("recovers a previous-environment sign-in only after explicit successful cancellation", async () => {
+    const intent = { provider: "xai", method: "subscription", name: "My Grok subscription", ownership: "personal", agentIds: [], allAgents: true } as const;
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValueOnce({
+      sessionId: "previous-login", environmentId: "previous-sandbox", aiConnection: intent,
+      status: "waiting_for_user", prompt: null,
+    }).mockImplementation(noActiveSession);
+    mockAgentsApi.cancelAdapterAuthLogin.mockRejectedValueOnce(new Error("Network unavailable"));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container); roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ToastProvider><TooltipProvider>
+        <AdapterLoginPanel companyId="company-1" adapterType="grok_local" environmentId="new-sandbox"
+          aiConnection={{ ...intent, agentIds: [] }} chrome="onboarding" autoStart />
+      </TooltipProvider></ToastProvider></QueryClientProvider>);
+    });
+    await flushUntil(() => Boolean(findButton(container, "Cancel previous sign-in and retry")));
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+    await act(async () => findButton(container, "Cancel previous sign-in and retry")!.click());
+    await flushUntil(() => container.textContent?.includes("Could not cancel") ?? false);
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    let release!: () => void;
+    mockAgentsApi.cancelAdapterAuthLogin.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    await act(async () => findButton(container, "Cancel previous sign-in and retry")!.click());
+    await flushReact();
+    expect(findButton(container, "Cancel previous sign-in and retry")!.disabled).toBe(true);
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    await act(async () => release());
+    await flushUntil(() => mockAgentsApi.startAdapterAuthLogin.mock.calls.length === 1);
+    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenLastCalledWith("company-1", "grok_local", "previous-login");
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "grok_local", { environmentId: "new-sandbox", aiConnection: intent });
+    queryClient.clear();
   });
 
   it("offers no Cancel in the onboarding chrome", async () => {

@@ -96,14 +96,12 @@ type VisualViewportLayout = {
 
 type NewIssueDialogViewportStyle = CSSProperties & {
   "--new-issue-visual-viewport-height"?: string;
-  "--new-issue-visual-viewport-offset-top"?: string;
   "--new-issue-dialog-top"?: string;
   "--new-issue-dialog-height"?: string;
 };
 
 type MobileEntityPickerViewportStyle = CSSProperties & {
   "--mobile-entity-picker-visual-viewport-height"?: string;
-  "--mobile-entity-picker-visual-viewport-bottom"?: string;
 };
 
 function readVisualViewportLayout(): VisualViewportLayout | null {
@@ -214,6 +212,12 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "high", label: "High" },
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
+  ],
+  agy_local: [
+    { value: "", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
   ],
 } as const;
 
@@ -402,7 +406,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Task title"
+      placeholder="Task title (optional)"
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -494,7 +498,6 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const titleRef = useRef("");
   const descriptionRef = useRef("");
-  const [titleHasText, setTitleHasText] = useState(false);
   const [draftHasText, setDraftHasText] = useState(false);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
@@ -706,7 +709,7 @@ export function NewIssueDialog() {
     (draft: IssueDraft) => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
       draftTimer.current = setTimeout(() => {
-        if (draft.title.trim()) saveDraft(draft);
+        if (draft.title.trim() || draft.description.trim()) saveDraft(draft);
       }, DEBOUNCE_MS);
     },
     [],
@@ -717,7 +720,6 @@ export function NewIssueDialog() {
     descriptionRef.current = nextDescription;
     setTitle(nextTitle);
     setDescription(nextDescription);
-    setTitleHasText(nextTitle.trim().length > 0);
     setDraftHasText(nextTitle.trim().length > 0 || nextDescription.trim().length > 0);
   }, []);
 
@@ -769,7 +771,6 @@ export function NewIssueDialog() {
     titleRef.current = nextTitle;
     const nextTitleHasText = nextTitle.trim().length > 0;
     const nextDraftHasText = nextTitleHasText || descriptionRef.current.trim().length > 0;
-    setTitleHasText((current) => current === nextTitleHasText ? current : nextTitleHasText);
     setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
     queueDraftSave({ title: nextTitle });
   }, [queueDraftSave]);
@@ -843,9 +844,9 @@ export function NewIssueDialog() {
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
-    } else if (newIssueDefaults.title) {
+    } else if (newIssueDefaults.title || newIssueDefaults.description) {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
-      setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
+      setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -870,7 +871,7 @@ export function NewIssueDialog() {
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
-    } else if (draft && draft.title.trim()) {
+    } else if (draft && (draft.title.trim() || draft.description.trim())) {
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
@@ -1043,7 +1044,7 @@ export function NewIssueDialog() {
   function handleSubmit() {
     const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
-    if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
+    if (!effectiveCompanyId || (!currentTitle && !currentDescription) || createIssue.isPending) return;
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeModelLane,
@@ -1080,7 +1081,7 @@ export function NewIssueDialog() {
     createIssue.mutate({
       companyId: effectiveCompanyId,
       stagedFiles,
-      title: currentTitle,
+      ...(currentTitle ? { title: currentTitle } : {}),
       description: currentDescription || undefined,
       status,
       priority: priority || "medium",
@@ -1221,6 +1222,8 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
+          : assigneeAdapterType === "agy_local"
+            ? "Antigravity options"
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
@@ -1327,8 +1330,10 @@ export function NewIssueDialog() {
   const CurrentWorkModeIcon = currentWorkMode.icon;
   const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
     const dialogGeometry = {
-      "--new-issue-dialog-top":
-        "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      // Fixed-position coordinates are relative to Safari's visual viewport.
+      // Adding visualViewport.offsetTop here places the dialog below that
+      // viewport after the software keyboard pans the page.
+      "--new-issue-dialog-top": "var(--new-issue-dialog-top-gap)",
       "--new-issue-dialog-height":
         "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
     };
@@ -1336,7 +1341,6 @@ export function NewIssueDialog() {
     return {
       ...dialogGeometry,
       "--new-issue-visual-viewport-height": `${visualViewportLayout.height}px`,
-      "--new-issue-visual-viewport-offset-top": `${visualViewportLayout.offsetTop}px`,
       ...(visualViewportLayout.constrained
         ? {
             top: "var(--new-issue-dialog-top)",
@@ -1350,7 +1354,6 @@ export function NewIssueDialog() {
     if (!visualViewportLayout) return {};
     return {
       "--mobile-entity-picker-visual-viewport-height": `${visualViewportLayout.height}px`,
-      "--mobile-entity-picker-visual-viewport-bottom": `${visualViewportLayout.offsetTop + visualViewportLayout.height}px`,
     };
   }, [visualViewportLayout]);
 
@@ -1515,6 +1518,7 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
+                mobileTitle="Select assignee"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 contentStyle={entityPickerViewportStyle}
@@ -1576,6 +1580,7 @@ export function NewIssueDialog() {
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
+                mobileTitle="Select project"
                 className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
                 triggerDataSlot="new-issue-compact-control"
                 contentStyle={entityPickerViewportStyle}
@@ -2362,7 +2367,7 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-(--sz-8_5rem) disabled:opacity-100"
-              disabled={!titleHasText || createIssue.isPending}
+              disabled={!draftHasText || createIssue.isPending}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >

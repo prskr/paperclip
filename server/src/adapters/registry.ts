@@ -129,7 +129,21 @@ import {
   sessionCodec as piSessionCodec,
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
-import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+import {
+  agentConfigurationDoc as piAgentConfigurationDoc,
+} from "@paperclipai/adapter-pi-local";
+import {
+  execute as agyExecute,
+  listSkills as listAgySkills,
+  syncSkills as syncAgySkills,
+  testEnvironment as agyTestEnvironment,
+  sessionCodec as agySessionCodec,
+  listAgyModels,
+} from "@paperclipai/adapter-agy-local/server";
+import {
+  agentConfigurationDoc as agyAgentConfigurationDoc,
+  models as agyModels,
+} from "@paperclipai/adapter-agy-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -404,8 +418,17 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider === "acpx") {
+      if (["cursor", "copilot", "pi"].includes(profile.acpxAgent)) {
+        // The profile resolver already validated the isolated host's exact
+        // qualification pair. Do not report a production readiness pass.
+        return {
+          adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "acpx_candidate_qualification_only", level: "warn" as const,
+            message: "This exact candidate and model are admitted for operator-controlled qualification only. Verified runtime installation, bound credentials, and model access are checked before execution; production support remains pending." }],
+        };
+      }
       try {
-        if (profile.acpxAgent !== "claude") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok") throw new Error("Select Codex to use the native Codex runner.");
         const target = context.executionTarget;
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
@@ -414,8 +437,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           );
           if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
           const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
-            throw new Error("ACPX Claude requires Linux x64 or macOS ARM64/x64.");
+          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
+            throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux x64 or macOS architecture.`);
           }
           return {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
@@ -423,11 +446,11 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
           };
         }
-        const { probeAcpxClaudeInstallation } = await import("@paperclipai/paperclip-runner/live");
-        await probeAcpxClaudeInstallation(profile.model);
+        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } = await import("@paperclipai/paperclip-runner/live");
+        await (profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : probeAcpxClaudeInstallation)(profile.model);
         return {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
-          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: "ACPX Claude runtime is installed and verified. Model access is checked when Claude runs." }],
+          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
         };
       } catch (error) {
         return {
@@ -510,7 +533,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.156.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build through the Rust Paperclip runner and authenticated PRP transport. Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification and are not enabled for production runs. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -523,9 +546,14 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
           { value: "claude_managed", label: "Claude Managed" },
           { value: "aws_agentcore", label: "AWS AgentCore" },
-          { value: "acpx", label: "ACPX Claude" },
+          { value: "acpx", label: "ACP agents" },
         ],
-        hint: "Select a local provider, company-qualified managed provider, or ACPX Claude.",
+        hint: "Select a local provider, company-qualified managed provider, or an ACP agent.",
+      },
+      {
+        key: "acpxAgent", label: "ACP agent", type: "select" as const, default: "claude",
+        options: [{ value: "claude", label: "Claude" }, { value: "grok", label: "Grok Build" }],
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
       },
       {
         key: "codexPermissionMode",
@@ -839,6 +867,29 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const agyLocalAdapter: ServerAdapterModule = {
+  type: "agy_local",
+  runtimeToolDelivery: "environment",
+  execute: agyExecute,
+  testEnvironment: agyTestEnvironment,
+  listSkills: listAgySkills,
+  syncSkills: syncAgySkills,
+  sessionCodec: agySessionCodec,
+  sessionManagement: getAdapterSessionManagement("agy_local") ?? undefined,
+  models: agyModels,
+  listModels: listAgyModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "agy"),
+    detectCommand: readConfiguredCommand(config, "agy"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: agyAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -858,6 +909,7 @@ function registerBuiltInAdapters() {
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    agyLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
@@ -1028,13 +1080,22 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
+function declaredModelsForAdapter(type: string): { id: string; label: string }[] | null {
+  const declared = getDeclaredAdapterModels()?.[type];
+  return declared?.length
+    ? declared.map((model) => ({ id: model.id, label: model.label ?? model.id }))
+    : null;
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
-  const declaredModels = getDeclaredAdapterModels();
-  if (declaredModels && declaredModels[type]?.length) {
-    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
-  }
+  const declaredModels = declaredModelsForAdapter(type);
+  if (declaredModels) return declaredModels;
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  // The built-in Codex adapter's OpenAI discovery includes image, audio, and
+  // embedding models that Codex cannot run. Use its curated list; declared
+  // models above and custom adapter discovery remain authoritative.
+  if (adapter === codexLocalAdapter) return adapter.models ?? [];
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
     if (discovered.length > 0) return discovered;
@@ -1043,6 +1104,9 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const declaredModels = declaredModelsForAdapter(type);
+  if (declaredModels) return declaredModels;
+  if (findActiveServerAdapter(type) === codexLocalAdapter) return listAdapterModels(type);
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.refreshModels) {

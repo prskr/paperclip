@@ -36,6 +36,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { DEFAULT_AGY_LOCAL_MODEL } from "@paperclipai/adapter-agy-local";
 import {
   Popover,
   PopoverContent,
@@ -173,7 +174,7 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local" || adapterType === "agy_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(
@@ -1067,6 +1068,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
+            : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "grok" ? "grok_local"
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
@@ -1271,26 +1273,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? "variant"
           : adapterType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
-  const thinkingEffortOptions =
-    adapterType === "codex_local"
-      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
-          id: option.value,
-          label: option.label,
-        }))
-      : adapterType === "cursor"
-        ? cursorModeOptions
-        : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
-          : adapterType === "kimi_local"
-            ? kimiThinkingEffortOptions
-            : adapterType === "pi_local"
-              ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : adapterType === "claude_local" || adapterType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType, currentModelId).map((id) => ({
-                    id,
-                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
-                  }))]
-                : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1304,6 +1286,59 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+  const thinkingEffortOptions = useMemo(() => {
+    let opts: { id: string; label: string }[];
+    if (adapterType === "codex_local") {
+      opts = codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+        id: option.value,
+        label: option.label,
+      }));
+    } else if (adapterType === "cursor") {
+      opts = [...cursorModeOptions];
+    } else if (adapterType === "opencode_local") {
+      opts = [...openCodeThinkingEffortOptions];
+    } else if (adapterType === "kimi_local") {
+      opts = [...kimiThinkingEffortOptions];
+    } else if (adapterType === "pi_local") {
+      opts = [
+        { id: "", label: "Auto" },
+        ...["off", "minimal", "low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+      ];
+    } else if (
+      adapterType === "claude_local" ||
+      adapterType === "grok_local" ||
+      adapterType === "agy_local"
+    ) {
+      opts = [
+        { id: "", label: "Auto" },
+        ...setupEfforts(adapterType, currentModelId).map((id) => ({
+          id,
+          label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+        })),
+      ];
+    } else {
+      opts = [...claudeThinkingEffortOptions];
+    }
+
+    if (
+      currentThinkingEffort &&
+      !opts.some((option) => option.id === currentThinkingEffort)
+    ) {
+      const formatted =
+        currentThinkingEffort === "xhigh"
+          ? "X-High"
+          : currentThinkingEffort[0].toUpperCase() + currentThinkingEffort.slice(1);
+      opts = [
+        ...opts,
+        {
+          id: currentThinkingEffort,
+          label: `${formatted} (unsupported)`,
+        },
+      ];
+    }
+
+    return opts;
+  }, [adapterType, currentModelId, currentThinkingEffort]);
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1612,6 +1647,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    } else if (t === "agy_local") {
+                      nextValues.model = DEFAULT_AGY_LOCAL_MODEL;
                     } else if (t === "paperclip_runner") {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                     }
@@ -1632,6 +1669,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : t === "agy_local"
+                              ? DEFAULT_AGY_LOCAL_MODEL
                             : t === "paperclip_runner"
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
@@ -1657,7 +1696,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
+          {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "grok" ? "grok_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
             value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
@@ -1721,7 +1760,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local", "agy_local"].includes(adapterType)
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
@@ -1887,6 +1926,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         pi_local: "pi",
                         cursor: "agent",
                         opencode_local: "opencode",
+                        agy_local: "agy",
                       } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
                     }
                   />
@@ -2340,6 +2380,12 @@ export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   return <DisplayedCodeLoginPanel {...props} />;
 }
 
+class AdapterLoginConflictError extends Error {
+  constructor(readonly sessionId: string) {
+    super("Another sign-in attempt is active. Finish or cancel that attempt before starting a new sign-in.");
+  }
+}
+
 function DisplayedCodeLoginPanel({
   companyId,
   adapterType,
@@ -2414,7 +2460,7 @@ function DisplayedCodeLoginPanel({
       try {
         const active = await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
         if (!active) return null;
-        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new AdapterLoginConflictError(active.sessionId);
         return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
@@ -2520,6 +2566,20 @@ function DisplayedCodeLoginPanel({
   // before the session id lands and start a second login the server would
   // count against the per-owner cap.
   const autoStartedRef = useRef(false);
+  const cancelConflictingLogin = useMutation({
+    mutationFn: async () => {
+      const conflict = activeSessionQuery.error;
+      if (!(conflict instanceof AdapterLoginConflictError)) return;
+      await agentsApi.cancelAdapterAuthLogin(companyId, adapterType, conflict.sessionId);
+    },
+    onSuccess: async () => {
+      autoStartedRef.current = false;
+      resumeAttemptedRef.current = false;
+      setStartError(null);
+      await activeSessionQuery.refetch();
+    },
+    onError: () => setStartError("Could not cancel the previous sign-in. Retry before starting a new one."),
+  });
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
@@ -2616,9 +2676,15 @@ function DisplayedCodeLoginPanel({
         mode="displayed_code"
       >
         {startError ? (
-          <p role="alert" className="pl-2 text-xs text-destructive">
-            {startError}
-          </p>
+          <div>
+            <p role="alert" className="pl-2 text-xs text-destructive">{startError}</p>
+            {activeSessionQuery.error instanceof AdapterLoginConflictError && (
+              <Button type="button" variant="outline" disabled={cancelConflictingLogin.isPending}
+                onClick={() => cancelConflictingLogin.mutate()}>
+                Cancel previous sign-in and retry
+              </Button>
+            )}
+          </div>
         ) : failed ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
             {status === "timed_out"
@@ -4021,14 +4087,21 @@ function ThinkingEffortDropdown({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const selected = options.find((option) => option.id === value) ?? options[0];
+  const selected = options.find((option) => option.id === value);
+  const displayLabel = selected
+    ? selected.label
+    : value
+      ? `${value === "xhigh" ? "X-High" : value[0]?.toUpperCase() + value.slice(1)} (unsupported)`
+      : options[0]?.label ?? "Auto";
 
   return (
     <Field label="Thinking effort" hint={help.thinkingEffort}>
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
+            <span className={cn(!value && "text-muted-foreground", !selected && value && "text-amber-500")}>
+              {displayLabel}
+            </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
