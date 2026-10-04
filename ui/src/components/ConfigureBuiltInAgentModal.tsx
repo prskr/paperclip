@@ -22,6 +22,7 @@ import {
   builtInAgentsApi,
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
+import { adapterCuratesModelOrder } from "../lib/model-utils";
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
 function isModelBasedAdapter(adapterType: string): boolean {
@@ -72,6 +73,9 @@ export function ConfigureBuiltInAgentModal({
       ? (config as Record<string, unknown>).model
       : null;
     if (typeof configuredModel === "string") return configuredModel;
+    if ((state.agent?.adapterType ?? defaultAdapterType(state)) === "agy_local" && definition.key === "summarizer") {
+      return "gemini-3.8-flash-low";
+    }
     const defaultModel = state.definition.defaultAdapterConfig?.model;
     return typeof defaultModel === "string" ? defaultModel : "";
   });
@@ -167,7 +171,11 @@ export function ConfigureBuiltInAgentModal({
               value={adapterType}
               onChange={(next) => {
                 setAdapterType(next);
-                setModel("");
+                if (next === "agy_local" && definition.key === "summarizer") {
+                  setModel("gemini-3.8-flash-low");
+                } else {
+                  setModel("");
+                }
               }}
               disabledTypes={disabledTypes}
             />
@@ -184,6 +192,7 @@ export function ConfigureBuiltInAgentModal({
               allowDefault={adapterType !== "opencode_local"}
               required
               groupByProvider={false}
+              preserveOrder={adapterCuratesModelOrder(adapterType)}
               creatable
             />
           )}
