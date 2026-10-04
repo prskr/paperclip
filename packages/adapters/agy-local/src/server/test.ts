@@ -19,7 +19,7 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import os from "node:os";
-import { DEFAULT_AGY_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_AGY_LOCAL_MODEL, modelHasEffortSuffix } from "../index.js";
 import { parseAgyJsonl } from "./parse.js";
 import { ensureAgyApiKeySettings } from "./credentials.js";
 
@@ -148,7 +148,7 @@ export async function testEnvironment(
     if (sandbox) args.push("--sandbox");
     if (agentPersona) args.push("--agent", agentPersona);
     if (model) args.push("--model", model);
-    if (effort) args.push("--effort", effort);
+    if (effort && !modelHasEffortSuffix(model)) args.push("--effort", effort);
     if (mode) args.push("--mode", mode);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
     if (extraArgs.length > 0) args.push(...extraArgs);
