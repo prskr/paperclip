@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { runChildProcess, type RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import { discoverAgySessionArtifacts, execute, modelHasEffortSuffix, resolveAgyPrintTimeoutSec } from "./execute.js";
 import { DENIED_ACTION_RUN, SIMPLE_RUN, TOOL_ERROR_RECOVERED_RUN } from "./fixtures.test-util.js";
 
@@ -793,6 +793,258 @@ describe("agy-local execute run outcome", () => {
     expect(calls.length).toBeGreaterThan(0);
     const lastCallOptions = calls[calls.length - 1][3] as { stdin?: string };
     expect(lastCallOptions?.stdin).toBeUndefined();
+  });
+
+  describe("pre-turn auth failure executionRecovery", () => {
+    const authFailureCtx: AdapterExecutionContext = {
+      runId: "run-auth-test",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Test Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {},
+      context: {
+        paperclipWorkspace: {
+          cwd: "/tmp/workspace",
+        },
+      },
+      onLog: async () => {},
+    };
+
+    function makeProcResult(override: Partial<RunProcessResult> = {}): RunProcessResult {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+        ...override,
+      };
+    }
+
+    it("marks pre-turn auth failure with bootstrap executionRecovery when no provider work started", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout:
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 0,
+                usage: { total_tokens: 0 },
+              },
+            }) + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toEqual({
+        kind: "bootstrap",
+        providerWorkStarted: false,
+      });
+      expect(
+        (result.resultJson as Record<string, unknown> | undefined)?.executionRecovery,
+      ).toEqual({
+        kind: "bootstrap",
+        providerWorkStarted: false,
+      });
+    });
+
+    it("does not set bootstrap executionRecovery when a tool event was parsed", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout: [
+            JSON.stringify({
+              event: "step_update",
+              step_update: {
+                conversation_id: "",
+                step_index: 1,
+                state: "DONE",
+                step_type: "tool",
+                tool_name: "view_file",
+                tool_info: {
+                  name: "view_file",
+                  parameters: { AbsolutePath: "/tmp/file.txt" },
+                  output: "content",
+                },
+              },
+            }),
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 0,
+                usage: { total_tokens: 0 },
+              },
+            }),
+          ].join("\n") + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+      expect(
+        (result.resultJson as Record<string, unknown> | undefined)?.executionRecovery,
+      ).toBeUndefined();
+    });
+
+    it("does not set bootstrap executionRecovery when non-zero tokens were parsed", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout:
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 0,
+                usage: { input_tokens: 15, output_tokens: 0, total_tokens: 15 },
+              },
+            }) + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+      expect(
+        (result.resultJson as Record<string, unknown> | undefined)?.executionRecovery,
+      ).toBeUndefined();
+    });
+
+    it("does not set bootstrap executionRecovery when non-zero total_tokens was parsed", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout:
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 0,
+                usage: { total_tokens: 25 },
+              },
+            }) + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("does not set bootstrap executionRecovery when session id is present", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout:
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "conv-12345",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 0,
+                usage: { total_tokens: 0 },
+              },
+            }) + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("does not set bootstrap executionRecovery when num_turns > 0", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout:
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 1,
+                usage: { total_tokens: 0 },
+              },
+            }) + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("does not set bootstrap executionRecovery when assistant event was parsed", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          stdout: [
+            JSON.stringify({
+              event: "step_update",
+              step_update: {
+                conversation_id: "",
+                step_index: 1,
+                state: "ACTIVE",
+                step_type: "agent_response",
+                text_delta: "Hello",
+              },
+            }),
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "",
+                status: "ERROR",
+                error: "authentication failed or timed out",
+                num_turns: 0,
+                usage: { total_tokens: 0 },
+              },
+            }),
+          ].join("\n") + "\n",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("does not set bootstrap executionRecovery on timeout even if auth error detected", async () => {
+      vi.mocked(runChildProcess).mockResolvedValueOnce(
+        makeProcResult({
+          exitCode: null,
+          signal: "SIGKILL",
+          timedOut: true,
+          stdout: "",
+          stderr: "authentication failed or timed out",
+        }),
+      );
+
+      const result = await execute(authFailureCtx);
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("agy_auth_required");
+      expect(result.executionRecovery).toBeUndefined();
+    });
   });
 });
 

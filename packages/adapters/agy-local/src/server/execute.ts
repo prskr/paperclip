@@ -612,16 +612,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const provider = inferModelProvider(model);
 
+    const errorCode = failed
+      ? outcome.permissionDenied
+        ? "agy_permission_denied"
+        : classifyErrorCode()
+      : null;
+
+    const rawTotalTokens =
+      typeof (attempt.parsed.resultEvent?.usage as Record<string, unknown> | undefined)?.total_tokens === "number"
+        ? ((attempt.parsed.resultEvent?.usage as Record<string, unknown>).total_tokens as number)
+        : 0;
+    const hasZeroTokens =
+      (!attempt.parsed.usage ||
+        ((attempt.parsed.usage.inputTokens ?? 0) === 0 &&
+          (attempt.parsed.usage.outputTokens ?? 0) === 0 &&
+          (attempt.parsed.usage.cachedInputTokens ?? 0) === 0)) &&
+      (attempt.parsed.thinkingTokens ?? 0) === 0 &&
+      rawTotalTokens === 0;
+
+    const hasZeroTurns =
+      attempt.parsed.numTurns === null ||
+      attempt.parsed.numTurns === undefined ||
+      attempt.parsed.numTurns === 0;
+
+    const sessionIdEmpty =
+      !attempt.parsed.sessionId || attempt.parsed.sessionId.trim().length === 0;
+
+    const noToolsParsed = attempt.parsed.tools.length === 0;
+
+    const noAssistantParsed =
+      !attempt.parsed.sawAgentResponse &&
+      (!attempt.parsed.assistantText || attempt.parsed.assistantText.trim().length === 0) &&
+      (!attempt.parsed.response || attempt.parsed.response.trim().length === 0);
+
+    const hasPositiveBootstrapEvidence =
+      sessionIdEmpty &&
+      noToolsParsed &&
+      hasZeroTokens &&
+      hasZeroTurns &&
+      noAssistantParsed;
+
+    const executionRecovery =
+      failed && errorCode === "agy_auth_required" && hasPositiveBootstrapEvidence
+        ? ({ kind: "bootstrap" as const, providerWorkStarted: false as const })
+        : undefined;
+
     return {
+      ...(executionRecovery ? { executionRecovery } : {}),
       exitCode: synthesizedExitCode,
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage: failed ? fallbackErrorMessage : null,
-      errorCode: failed
-        ? outcome.permissionDenied
-          ? "agy_permission_denied"
-          : classifyErrorCode()
-        : null,
+      errorCode,
       errorFamily: failed && !outcome.permissionDenied ? errorFamily : null,
       usage: attempt.parsed.usage
         ? {
@@ -643,6 +685,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
         ...(attempt.parsed.resultJson ? attempt.parsed.resultJson : {}),
+        ...(executionRecovery ? { executionRecovery } : {}),
         ...(attempt.parsed.thinkingTokens !== null
           ? { thinking_tokens: attempt.parsed.thinkingTokens }
           : {}),

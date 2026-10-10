@@ -49,6 +49,7 @@ export interface ParsedAgyOutput {
   availableTools: string[];
   permissionMode: string | null;
   assistantText: string;
+  sawAgentResponse: boolean;
   malformedLines: number;
 }
 
@@ -126,6 +127,7 @@ export function parseAgyJsonl(stdout: string): ParsedAgyOutput {
   let permissionMode: string | null = null;
   const availableTools: string[] = [];
   let assistantText = "";
+  let sawAgentResponse = false;
   let malformedLines = 0;
   let sawJsonEvent = false;
 
@@ -178,6 +180,7 @@ export function parseAgyJsonl(stdout: string): ParsedAgyOutput {
       const state = asString(stepUpdate.state, "");
 
       if (stepType === "agent_response") {
+        sawAgentResponse = true;
         const delta = typeof stepUpdate.text_delta === "string" ? stepUpdate.text_delta : "";
         if (delta) assistantText += delta;
       }
@@ -296,6 +299,7 @@ export function parseAgyJsonl(stdout: string): ParsedAgyOutput {
     availableTools,
     permissionMode,
     assistantText,
+    sawAgentResponse,
     malformedLines,
   };
 }
