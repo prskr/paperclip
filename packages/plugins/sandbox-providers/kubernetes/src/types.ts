@@ -66,6 +66,14 @@ export const kubernetesProviderConfigSchema = z
      *   installed, or when you need stable (non-alpha) k8s APIs.
      */
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
+
+    /**
+     * Keep the Sandbox CR / pod running across runs instead of deleting it on
+     * release, so the next run can resume the same lease (and its emptyDir
+     * workspace). Only supported by the `sandbox-cr` backend; the pod keeps
+     * consuming resources while idle. Use destroyLease for a hard delete.
+     */
+    reuseLease: z.boolean().default(false),
   })
   .refine(
     (cfg) => cfg.inCluster || cfg.kubeconfig,
@@ -86,6 +94,18 @@ export interface KubernetesLeaseMetadata {
   /** Name of the workload resource (Job name for job backend, Sandbox CR name for sandbox-cr backend). */
   jobName: string;
   podName: string | null;
+  /**
+   * UID of the backing pod (sandbox-cr only), used at resume to detect that the
+   * controller replaced the pod (emptyDirs, i.e. the workspace, are then lost).
+   * null/absent = not yet known: the pod usually does not exist yet at acquire
+   * time, so it is backfilled at the first resume. Until then pod identity is
+   * not verified.
+   */
+  podUid?: string | null;
+  /** "agent" container restart count observed at resume (sandbox-cr only). */
+  containerRestartCount?: number;
+  /** Why the agent container last died at resume, e.g. "OOMKilled". */
+  containerLastTerminationReason?: string;
   secretName: string;
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */

@@ -40,6 +40,11 @@ import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
+  inspectAgentContainerAfterFailure,
+  oomKilledHint,
+  readPodUid,
+} from "./container-status.js";
+import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicyOrReleaseWorkload,
   NETWORK_EGRESS_GRANT_PATH,
@@ -118,6 +123,9 @@ const readySandboxesByLease = new Set<string>();
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
+// Longer budget once the agent container is seen restarting in the same pod
+// (e.g. after an OOM kill). Covers the kubelet restart back-off cap of 300s.
+const RESUME_RESTART_GRACE_MS = 300_000;
 
 // The workspace remote dir is the confinement root for native file sync. It is
 // recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
@@ -234,6 +242,11 @@ const plugin = definePlugin({
           `egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs are reachable only via the operator-supplied egressAllowCidrs: ${totalFqdns.join(", ")}. Switch egressMode to "cilium" (requires Cilium CNI) for exact FQDN allow-listing.`,
         );
       }
+    }
+    if (cfg.reuseLease && cfg.backend === "job") {
+      warnings.push(
+        "reuseLease=true has no effect with backend=job: Job leases are one-shot and are always deleted on release. Use backend=sandbox-cr for lease reuse.",
+      );
     }
     return { ok: true, normalizedConfig: cfg as Record<string, unknown>, warnings: warnings.length > 0 ? warnings : undefined };
   },
@@ -446,11 +459,18 @@ const plugin = definePlugin({
     });
 
     const podName = await orchestrator.findPod(clients, namespace, jobName);
+    // Record pod identity for the resume check (sandbox-cr only). The controller
+    // usually has not created the pod yet, so this is often null; resume then
+    // backfills it. Until recorded, a pod replaced by the controller cannot be
+    // told apart from the original.
+    const podUid =
+      isSandboxCrBackend && podName ? await readPodUid(clients, namespace, podName) : null;
 
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName,
       podName,
+      podUid,
       secretName,
       phase: "Pending",
       backend: config.backend,
@@ -498,7 +518,10 @@ const plugin = definePlugin({
       name: params.providerLeaseId,
       backend: leaseBackend,
       readyTimeoutMs: RESUME_READY_TIMEOUT_MS,
+      restartGraceMs: RESUME_RESTART_GRACE_MS,
       pollMs: RESUME_READY_POLL_MS,
+      expectedPodUid:
+        typeof params.leaseMetadata?.podUid === "string" ? params.leaseMetadata.podUid : null,
     });
 
     if (!check.resumable) {
@@ -522,10 +545,18 @@ const plugin = definePlugin({
       readySandboxesByLease.add(params.providerLeaseId);
     }
 
+    const recordedPodUid =
+      typeof params.leaseMetadata?.podUid === "string" ? params.leaseMetadata.podUid : null;
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
       podName: check.podName,
+      // Backfill identity the first time the pod is observed.
+      podUid: recordedPodUid ?? check.podUid ?? null,
+      ...(check.restartCount !== undefined ? { containerRestartCount: check.restartCount } : {}),
+      ...(check.lastTerminationReason
+        ? { containerLastTerminationReason: check.lastTerminationReason }
+        : {}),
       secretName,
       phase: check.phase,
       backend: leaseBackend,
@@ -597,6 +628,15 @@ const plugin = definePlugin({
     // so unrelated concurrent leases keep their in-flight buffers intact.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
+
+    // Lease reuse: keep the Sandbox CR/pod (and its emptyDir workspace) alive so
+    // the next run resumes it via onEnvironmentResumeLease. Only the sandbox-cr
+    // backend can be reused; Jobs are one-shot. No termination receipt is
+    // returned: the SDK receipt only models "stopped"/"destroyed", and the pod
+    // is neither. params.cancelActiveWork is not honored here — processes
+    // exec'd into the pod keep running until they exit (best-effort kill of
+    // in-pod processes is out of scope); use destroyLease to force-stop.
+    if (config.reuseLease && leaseBackend === "sandbox-cr") return;
 
     try {
       await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
@@ -888,6 +928,19 @@ const plugin = definePlugin({
         effectiveTimeoutMs - (Date.now() - executeStartedAt),
       );
 
+      const execMetadata = {
+        provider: "kubernetes",
+        backend: "sandbox-cr",
+        namespace,
+        sandboxName: lease.providerLeaseId,
+        podName,
+      };
+      // A thrown exec or a signal exit may mean the container was restarted
+      // (e.g. OOM kill): the failure paths below forget the cached readiness so
+      // the next exec re-runs the readiness wait instead of exec'ing into a
+      // restarting container.
+      const execStartedAt = Date.now();
+
       let execResult: { exitCode: number; stdout: string; stderr: string };
       try {
         execResult = await execInPod(
@@ -900,35 +953,75 @@ const plugin = definePlugin({
           remainingTimeoutMs,
         );
       } catch (err) {
-        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
-        // the caller can retry instead of hanging forever.
+        readySandboxesByLease.delete(lease.providerLeaseId);
+        const message = err instanceof Error ? err.message : String(err);
+        const inspection = await inspectAgentContainerAfterFailure(
+          clients,
+          namespace,
+          podName,
+          execStartedAt,
+        );
+        if (inspection?.restarted) {
+          // The exec died because the container was killed/restarted, not
+          // because the watchdog expired: don't report a retryable timeout.
+          const stderr = inspection.oomKilled
+            ? `${message}\n${oomKilledHint(inspection.restartCount)}`
+            : message;
+          return {
+            exitCode: inspection.oomKilled ? 137 : null,
+            timedOut: false,
+            stdout: "",
+            stderr: appendNetworkEgressDenyHint(stderr, scopedNetworkEgress),
+            metadata: {
+              ...execMetadata,
+              containerRestartCount: inspection.restartCount,
+              containerLastTerminationReason: inspection.lastTerminationReason,
+            },
+          };
+        }
+        // Watchdog-fired or WebSocket-setup error with no container restart
+        // detected. Surface as a timeout so the caller can retry instead of
+        // hanging forever.
         return {
           exitCode: null,
           timedOut: true,
           stdout: "",
-          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
-          metadata: {
-            provider: "kubernetes",
-            backend: "sandbox-cr",
-            namespace,
-            sandboxName: lease.providerLeaseId,
-            podName,
-          },
+          stderr: appendNetworkEgressDenyHint(message, scopedNetworkEgress),
+          metadata: execMetadata,
         };
+      }
+
+      let resultStderr = execResult.stderr;
+      let resultMetadata: Record<string, unknown> = execMetadata;
+      // Only 137/143-style exits (SIGKILL/SIGTERM) can be a container kill.
+      // Ordinary command failures (probes like `test -f`) keep the cached
+      // readiness and skip the extra pod read.
+      if (execResult.exitCode >= 128) {
+        readySandboxesByLease.delete(lease.providerLeaseId);
+        const inspection = await inspectAgentContainerAfterFailure(
+          clients,
+          namespace,
+          podName,
+          execStartedAt,
+        );
+        if (inspection?.restarted) {
+          if (inspection.oomKilled) {
+            resultStderr = `${resultStderr}${resultStderr && !resultStderr.endsWith("\n") ? "\n" : ""}${oomKilledHint(inspection.restartCount)}`;
+          }
+          resultMetadata = {
+            ...execMetadata,
+            containerRestartCount: inspection.restartCount,
+            containerLastTerminationReason: inspection.lastTerminationReason,
+          };
+        }
       }
 
       return {
         exitCode: execResult.exitCode,
         timedOut: false,
         stdout: execResult.stdout,
-        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
-        metadata: {
-          provider: "kubernetes",
-          backend: "sandbox-cr",
-          namespace,
-          sandboxName: lease.providerLeaseId,
-          podName,
-        },
+        stderr: appendNetworkEgressDenyHint(resultStderr, scopedNetworkEgress),
+        metadata: resultMetadata,
       };
     } else {
       // ── Job backend (legacy / stable fallback) ──────────────────────────────

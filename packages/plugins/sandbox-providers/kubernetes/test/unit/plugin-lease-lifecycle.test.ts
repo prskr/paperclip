@@ -263,3 +263,120 @@ describe("onEnvironmentDestroyLease", () => {
     expect(deleteCr).not.toHaveBeenCalled();
   });
 });
+
+describe("onEnvironmentReleaseLease (lease reuse)", () => {
+  const releaseParams = (config: Record<string, unknown>, metadata = leaseMetadata()) => ({
+    driverKey: "kubernetes",
+    companyId: "acme",
+    environmentId: "env-1",
+    config,
+    providerLeaseId: "pc-abc",
+    leaseMetadata: metadata,
+  });
+
+  it("declares reusable leases in the manifest", async () => {
+    const { default: manifest } = await import("../../src/manifest.js");
+    expect(manifest.environmentDrivers?.[0]?.supportsReusableLeases).toBe(true);
+  });
+
+  it("keeps the Sandbox CR when reuseLease=true on sandbox-cr", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    h.clients = { custom: { deleteNamespacedCustomObject: deleteCr } };
+    await plugin.definition.onEnvironmentReleaseLease!(
+      releaseParams({ ...CONFIG, reuseLease: true }),
+    );
+    expect(deleteCr).not.toHaveBeenCalled();
+  });
+
+  it("still deletes the Sandbox CR when reuseLease=false", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    h.clients = { custom: { deleteNamespacedCustomObject: deleteCr } };
+    await plugin.definition.onEnvironmentReleaseLease!(releaseParams(CONFIG));
+    expect(deleteCr).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "paperclip-acme", name: "pc-abc" }),
+    );
+  });
+
+  it("still deletes the Job for job-backend leases even with reuseLease=true", async () => {
+    const deleteJob = vi.fn().mockResolvedValue({});
+    h.clients = { batch: { deleteNamespacedJob: deleteJob } };
+    await plugin.definition.onEnvironmentReleaseLease!(
+      releaseParams(
+        { inCluster: true, backend: "job", reuseLease: true },
+        leaseMetadata({ backend: "job" }),
+      ),
+    );
+    expect(deleteJob).toHaveBeenCalled();
+  });
+
+  it("destroyLease still hard-deletes when reuseLease=true", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    h.clients = {
+      custom: { deleteNamespacedCustomObject: deleteCr },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      },
+    };
+    await plugin.definition.onEnvironmentDestroyLease!(
+      releaseParams({ ...CONFIG, reuseLease: true }),
+    );
+    expect(deleteCr).toHaveBeenCalled();
+  });
+
+  it("warns at validation when reuseLease=true with the job backend", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, backend: "job", reuseLease: true },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings?.some((w) => /reuseLease/.test(w))).toBe(true);
+  });
+});
+
+describe("onEnvironmentResumeLease (pod identity)", () => {
+  it("rejects a lease whose pod UID changed and backfills a missing UID on success", async () => {
+    const pod = (uid: string) => ({
+      metadata: { uid },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          {
+            name: "agent",
+            ready: true,
+            restartCount: 2,
+            state: { running: {} },
+            lastState: { terminated: { reason: "OOMKilled" } },
+          },
+        ],
+      },
+    });
+    const custom = {
+      getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
+    };
+    const resume = (podUid?: string) =>
+      plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: CONFIG,
+        providerLeaseId: "pc-abc",
+        leaseMetadata: leaseMetadata(podUid ? { podUid } : {}),
+      });
+
+    h.clients = { custom, core: { readNamespacedPod: vi.fn().mockResolvedValue(pod("uid-new")) } };
+    const replaced = await resume("uid-old");
+    expect(replaced.providerLeaseId).toBeNull();
+    expect(replaced.metadata?.reason).toMatch(/replaced/);
+
+    const backfilled = await resume();
+    expect(backfilled.providerLeaseId).toBe("pc-abc");
+    expect(backfilled.metadata).toEqual(
+      expect.objectContaining({
+        podUid: "uid-new",
+        containerRestartCount: 2,
+        containerLastTerminationReason: "OOMKilled",
+      }),
+    );
+  });
+});

@@ -1,7 +1,10 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0-alpha.1";
+// The bundled-plugin boot reconcile refreshes the persisted manifest only when
+// PLUGIN_VERSION changes, so a manifest change needs a bump.
+// 0.1.0-alpha.2 declares `supportsReusableLeases` and adds the `reuseLease` option.
+const PLUGIN_VERSION = "0.1.0-alpha.2";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -23,6 +26,7 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Kubernetes",
       description:
         "Dispatches agent runs in per-tenant Kubernetes namespaces. Default backend (sandbox-cr, alpha) uses kubernetes-sigs/agent-sandbox for multi-command exec; fallback backend (job) uses stable batch/v1 Job for clusters without agent-sandbox installed.",
+      supportsReusableLeases: true,
       configSchema: {
         type: "object",
         properties: {
@@ -107,6 +111,11 @@ const manifest: PaperclipPluginManifestV1 = {
             enum: ["sandbox-cr", "job"],
             description:
               "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
+          },
+          reuseLease: {
+            type: "boolean",
+            description:
+              "Keep the Sandbox CR/pod running across runs instead of deleting it on release, so the next run resumes the same lease. Only supported by the sandbox-cr backend. The pod keeps consuming resources while idle.",
           },
         },
         anyOf: [

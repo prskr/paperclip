@@ -189,6 +189,133 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
   });
 });
 
+function agentPod(
+  agent: Record<string, unknown>,
+  opts: { uid?: string; phase?: string } = {},
+): Record<string, unknown> {
+  return {
+    metadata: { uid: opts.uid ?? "pod-uid-1" },
+    status: {
+      phase: opts.phase ?? "Running",
+      containerStatuses: [{ name: "agent", ...agent }],
+    },
+  };
+}
+
+const OOM_LAST_STATE = { terminated: { reason: "OOMKilled", exitCode: 137 } };
+
+function restartClients(pods: Record<string, unknown>[], cr = readySandboxCr("pc-abc-pod")) {
+  const readNamespacedPod = vi.fn();
+  for (const pod of pods.slice(0, -1)) readNamespacedPod.mockResolvedValueOnce(pod);
+  readNamespacedPod.mockResolvedValue(pods[pods.length - 1]);
+  return {
+    custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue(cr) },
+    core: { readNamespacedPod },
+  };
+}
+
+describe("checkLeaseResumable (sandbox-cr container restarts)", () => {
+  const base = {
+    namespace: "ns",
+    name: "pc-abc",
+    backend: "sandbox-cr" as const,
+    readyTimeoutMs: 30,
+    restartGraceMs: 2_000,
+    pollMs: 5,
+  };
+
+  it("is resumable after an in-place OOM restart and reports restartCount/lastTerminationReason", async () => {
+    const clients = restartClients([
+      agentPod({ ready: true, restartCount: 1, state: { running: {} }, lastState: OOM_LAST_STATE }),
+    ]);
+    const result = await checkLeaseResumable(clients as never, {
+      ...base,
+      expectedPodUid: "pod-uid-1",
+    });
+    expect(result).toEqual({
+      resumable: true,
+      podName: "pc-abc-pod",
+      phase: "Running",
+      podUid: "pod-uid-1",
+      restartCount: 1,
+      lastTerminationReason: "OOMKilled",
+    });
+  });
+
+  it("waits through CrashLoopBackOff beyond readyTimeoutMs, then resumes once Ready", async () => {
+    const crashLoop = agentPod({
+      ready: false,
+      restartCount: 2,
+      state: { waiting: { reason: "CrashLoopBackOff" } },
+      lastState: OOM_LAST_STATE,
+    });
+    const clients = restartClients([
+      ...Array.from({ length: 15 }, () => crashLoop), // ~75ms > readyTimeoutMs (30ms)
+      agentPod({ ready: true, restartCount: 3, state: { running: {} }, lastState: OOM_LAST_STATE }),
+    ], {
+      metadata: { uid: "uid-1" },
+      // Sandbox Ready=False while the container restarts must not be terminal.
+      status: { podName: "pc-abc-pod", conditions: [{ type: "Ready", status: "False", reason: "DependenciesNotReady" }] },
+    });
+    const result = await checkLeaseResumable(clients as never, base);
+    expect(result).toMatchObject({
+      resumable: true,
+      restartCount: 3,
+      lastTerminationReason: "OOMKilled",
+    });
+    expect(clients.core.readNamespacedPod.mock.calls.length).toBeGreaterThan(15);
+  });
+
+  it("is not resumable when the pod UID changed (pod replaced, emptyDirs lost)", async () => {
+    const clients = restartClients([
+      agentPod({ ready: true, restartCount: 0, state: { running: {} } }, { uid: "pod-uid-2" }),
+    ]);
+    const result = await checkLeaseResumable(clients as never, {
+      ...base,
+      expectedPodUid: "pod-uid-1",
+    });
+    expect(result.resumable).toBe(false);
+    if (!result.resumable) expect(result.reason).toMatch(/replaced \(uid changed\); emptyDir workspace lost/);
+  });
+
+  it("skips the identity check when no pod UID was recorded", async () => {
+    const clients = restartClients([
+      agentPod({ ready: true, restartCount: 0, state: { running: {} } }),
+    ]);
+    const result = await checkLeaseResumable(clients as never, { ...base, expectedPodUid: null });
+    expect(result.resumable).toBe(true);
+  });
+
+  it("fails fast on unrecoverable waiting reasons (ImagePullBackOff)", async () => {
+    const clients = restartClients([
+      agentPod({ ready: false, restartCount: 0, state: { waiting: { reason: "ImagePullBackOff" } } }),
+    ]);
+    const started = Date.now();
+    const result = await checkLeaseResumable(clients as never, { ...base, restartGraceMs: 60_000 });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.resumable).toBe(false);
+    if (!result.resumable) expect(result.reason).toMatch(/ImagePullBackOff/);
+  });
+
+  it("is not resumable when the pod phase is Failed", async () => {
+    const clients = restartClients([
+      agentPod({ ready: false, restartCount: 0, state: { terminated: {} } }, { phase: "Failed" }),
+    ]);
+    const result = await checkLeaseResumable(clients as never, base);
+    expect(result.resumable).toBe(false);
+    if (!result.resumable) expect(result.reason).toMatch(/Failed/);
+  });
+
+  it("gives up after the restart grace if the container never recovers", async () => {
+    const clients = restartClients([
+      agentPod({ ready: false, restartCount: 5, state: { waiting: { reason: "CrashLoopBackOff" } } }),
+    ]);
+    const result = await checkLeaseResumable(clients as never, { ...base, restartGraceMs: 60 });
+    expect(result.resumable).toBe(false);
+    if (!result.resumable) expect(result.reason).toMatch(/CrashLoopBackOff/);
+  });
+});
+
 describe("checkLeaseResumable (job backend)", () => {
   it("resumes a Running Job lease", async () => {
     const clients = {
